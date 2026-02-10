@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v2.1.0 - Fix Cursor Teleporting
-- FIX: Cursor now transitions smoothly between subfolder files
-- Adds realistic mouse movement during subfolder transitions
-- ISSUE: v2.0.0 had cursor teleporting between subfolders
+string_macros.py - v2.2.0 - Extract Numbers from Folder Names
+- FIX: Now scans folder names for numbers (e.g., "part1", "step2", "3-action")
+- Extracts and orders by number, not strict digit-only folder names
+- ISSUE: v2.1.0 required folders to be exactly "1", "2", "3" (too strict)
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v2.1.0"
+VERSION = "v2.2.0"
 
 # ============================================================================
 # HELPER FUNCTIONS (from merge_macros)
@@ -254,13 +254,22 @@ def string_files_from_subfolders(subfolder_files, tracker, rng):
 # ============================================================================
 
 def scan_for_numbered_subfolders(base_path):
-    """Scans folder for numbered subfolders (1/, 2/, 3/)"""
+    """
+    Scans folder for subfolders with numbers in their names.
+    Accepts: "1", "part1", "step2", "3-action", etc.
+    Returns dict: {extracted_number: [list of .json files]}
+    """
     base = Path(base_path)
     numbered_folders = {}
     
     for item in base.iterdir():
-        if item.is_dir() and item.name.isdigit():
-            folder_num = int(item.name)
+        if not item.is_dir():
+            continue
+        
+        # Extract number from folder name using regex
+        match = re.search(r'\d+', item.name)
+        if match:
+            folder_num = int(match.group())
             json_files = sorted(item.glob("*.json"))
             if json_files:
                 numbered_folders[folder_num] = json_files
