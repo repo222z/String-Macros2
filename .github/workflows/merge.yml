@@ -46,6 +46,17 @@ jobs:
         
       - name: Execute string macro script
         run: |
+          # Check if script exists
+          if [ ! -f "string_macros.py" ]; then
+            echo "❌ ERROR: string_macros.py not found in repository root!"
+            echo ""
+            echo "Please ensure string_macros.py is committed to the repository."
+            echo "Expected location: /string_macros.py (in root directory)"
+            echo ""
+            ls -la
+            exit 1
+          fi
+          
           mkdir -p output
           
           # Build command
@@ -82,14 +93,42 @@ jobs:
           BUNDLE_NAME="stringed_bundle_${{ env.BUNDLE_SEQ }}"
           ZIP_FILE="stringed_macros_${{ env.BUNDLE_SEQ }}.zip"
           
-          ls -R output/
+          echo "Checking output directory:"
+          ls -R output/ || echo "Output directory is empty or doesn't exist"
           
-          if [ -d "output/$BUNDLE_NAME" ]; then
-            cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
-          else
-            echo "Error: Directory output/$BUNDLE_NAME was not found!"
+          if [ ! -d "output/$BUNDLE_NAME" ]; then
+            echo "❌ Error: Directory output/$BUNDLE_NAME was not found!"
+            echo ""
+            echo "This usually means:"
+            echo "  1. No folders with numbered subfolders were found in string_input/"
+            echo "  2. The script didn't create any output files"
+            echo ""
+            echo "Please check:"
+            echo "  - string_input/ exists and has folders"
+            echo "  - Folders contain numbered subfolders (1/, 2/, 3/)"
+            echo "  - Numbered subfolders contain .json files"
+            echo ""
+            echo "Example structure:"
+            echo "  string_input/"
+            echo "  └── 57- My Task/"
+            echo "      ├── 1/"
+            echo "      │   ├── file1.json"
+            echo "      │   └── file2.json"
+            echo "      ├── 2/"
+            echo "      │   └── action.json"
+            echo "      └── 3/"
+            echo "          └── return.json"
             exit 1
           fi
+          
+          # Check if bundle has any files
+          if [ -z "$(ls -A output/$BUNDLE_NAME)" ]; then
+            echo "❌ Error: Bundle directory exists but is empty!"
+            echo "No files were created. Check script output above."
+            exit 1
+          fi
+          
+          cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
           echo "FINAL_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
           
       - name: Upload stringed ZIP artifact
