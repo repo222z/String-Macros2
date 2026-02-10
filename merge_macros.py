@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v2.0.0 - Full Feature Integration
-- ADDED: All merge_macros features integrated
-- Chat inserts between final stringed files (not during stringing)
-- No gaps during stringing (seamless subfolder transitions)
-- Gaps between final stringed files only
-- CRITICAL: Problematic key filtering added
-- Based on merge_macros v3.17.1 + stringing logic
+string_macros.py - v2.1.0 - Fix Cursor Teleporting
+- FIX: Cursor now transitions smoothly between subfolder files
+- Adds realistic mouse movement during subfolder transitions
+- ISSUE: v2.0.0 had cursor teleporting between subfolders
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v2.0.0"
+VERSION = "v2.1.0"
 
 # ============================================================================
 # HELPER FUNCTIONS (from merge_macros)
@@ -36,10 +33,90 @@ def filter_problematic_keys(events: list) -> list:
     for event in events:
         keycode = event.get('KeyCode')
         if keycode in problematic_codes:
-            continue  # Skip this event
+            continue
         filtered.append(event)
     
     return filtered
+
+def generate_human_path(start_x, start_y, end_x, end_y, duration_ms, rng):
+    """
+    Generate a human-like mouse path with variable speed and wobbles.
+    Returns: List of (time_ms, x, y) tuples.
+    """
+    if duration_ms < 100:
+        return [(0, end_x, end_y)]
+    
+    path = []
+    dx = end_x - start_x
+    dy = end_y - start_y
+    distance = math.sqrt(dx**2 + dy**2)
+    
+    if distance < 5:
+        return [(0, end_x, end_y)]
+    
+    speed_profile = rng.choice(['fast_start', 'slow_start', 'medium', 'hesitant'])
+    num_steps = max(3, min(int(distance / 15), int(duration_ms / 50)))
+    
+    # Add control points for curved path
+    num_control = rng.randint(1, 3)
+    control_points = []
+    for _ in range(num_control):
+        offset = rng.uniform(-0.3, 0.3) * distance
+        t = rng.uniform(0.2, 0.8)
+        ctrl_x = start_x + dx * t + (-dy / (distance + 1)) * offset
+        ctrl_y = start_y + dy * t + (dx / (distance + 1)) * offset
+        control_points.append((ctrl_x, ctrl_y, t))
+    
+    control_points.sort(key=lambda p: p[2])
+    current_time = 0
+    
+    for step in range(num_steps + 1):
+        t_raw = step / num_steps
+        
+        # Apply speed profile
+        if speed_profile == 'fast_start':
+            t = 1 - (1 - t_raw) ** 2
+        elif speed_profile == 'slow_start':
+            t = t_raw ** 2
+        elif speed_profile == 'hesitant':
+            t = 0.5 * (1 - math.cos(t_raw * math.pi))
+        else:
+            t = 0.5 * (1 - math.cos(t_raw * math.pi))
+        
+        # Calculate position
+        if not control_points:
+            x = start_x + dx * t
+            y = start_y + dy * t
+        else:
+            x, y = start_x, start_y
+            for i, (ctrl_x, ctrl_y, ctrl_t) in enumerate(control_points):
+                if t <= ctrl_t:
+                    segment_t = t / ctrl_t if ctrl_t > 0 else 0
+                    x = start_x + (ctrl_x - start_x) * segment_t
+                    y = start_y + (ctrl_y - start_y) * segment_t
+                    break
+                else:
+                    if i == len(control_points) - 1:
+                        segment_t = (t - ctrl_t) / (1 - ctrl_t) if (1 - ctrl_t) > 0 else 0
+                        x = ctrl_x + (end_x - ctrl_x) * segment_t
+                        y = ctrl_y + (end_y - ctrl_y) * segment_t
+                    else:
+                        start_x, start_y = ctrl_x, ctrl_y
+        
+        # Add wobble
+        wobble = rng.uniform(1, 5) if step > 0 and step < num_steps else 0
+        x += rng.uniform(-wobble, wobble)
+        y += rng.uniform(-wobble, wobble)
+        
+        # Bounds
+        x = max(100, min(1800, int(x)))
+        y = max(100, min(1000, int(y)))
+        
+        step_time = int(t * duration_ms)
+        current_time = max(current_time, step_time)
+        path.append((current_time, x, y))
+    
+    return path
 
 # ============================================================================
 # COMBINATION TRACKER
@@ -87,7 +164,7 @@ class CombinationTracker:
 def string_files_from_subfolders(subfolder_files, tracker, rng):
     """
     Gets next combination and strings files in order (1→2→3).
-    NO gaps between subfolders (seamless transition).
+    Adds smooth cursor transitions between subfolders.
     Applies problematic key filtering.
     Returns stringed events and file names.
     """
@@ -96,7 +173,7 @@ def string_files_from_subfolders(subfolder_files, tracker, rng):
     stringed_events = []
     timeline = 0
     
-    for file_path in combination:
+    for idx, file_path in enumerate(combination):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 events = json.load(f)
@@ -116,12 +193,57 @@ def string_files_from_subfolders(subfolder_files, tracker, rng):
         # Normalize timing to start at 0
         base_time = min(e.get('Time', 0) for e in events)
         
+        # CURSOR TRANSITION: Add smooth movement between subfolders
+        if idx > 0 and stringed_events:
+            # Get last cursor position from previous subfolder
+            last_cursor_event = None
+            for e in reversed(stringed_events):
+                if 'X' in e and 'Y' in e:
+                    last_cursor_event = e
+                    break
+            
+            # Get first cursor position from current subfolder
+            first_cursor_event = None
+            for e in events:
+                if 'X' in e and 'Y' in e:
+                    first_cursor_event = e
+                    break
+            
+            # Add transition if positions differ
+            if last_cursor_event and first_cursor_event:
+                last_x, last_y = last_cursor_event['X'], last_cursor_event['Y']
+                first_x, first_y = first_cursor_event['X'], first_cursor_event['Y']
+                
+                if (last_x != first_x) or (last_y != first_y):
+                    # Calculate transition duration (50-150ms)
+                    transition_duration = int(rng.uniform(50, 150))
+                    
+                    # Generate smooth path
+                    transition_path = generate_human_path(
+                        last_x, last_y,
+                        first_x, first_y,
+                        transition_duration,
+                        rng
+                    )
+                    
+                    # Insert transition events
+                    for rel_time, x, y in transition_path[:-1]:  # Skip last (will be first event of next file)
+                        stringed_events.append({
+                            'Type': 'MouseMove',
+                            'Time': timeline + rel_time,
+                            'X': x,
+                            'Y': y
+                        })
+                    
+                    timeline += transition_duration
+        
+        # Add events from current subfolder
         for event in events:
             new_event = {**event}
             new_event['Time'] = event['Time'] - base_time + timeline
             stringed_events.append(new_event)
         
-        # Update timeline (seamless, no gaps)
+        # Update timeline (after this subfolder)
         if stringed_events:
             timeline = stringed_events[-1]['Time']
     
