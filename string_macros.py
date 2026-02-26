@@ -19,7 +19,7 @@ string_macros.py - v3.1.0 - Full Anti-Detection Suite + Inefficient Type
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.1.0"
+VERSION = "v3.2.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -724,7 +724,7 @@ def insert_massive_pause(events: list, rng: random.Random) -> tuple:
 # STRING PARTS WITH ANTI-DETECTION
 # ============================================================================
 
-def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
+def string_parts(subfolder_files, combination, rng, dmwm_file_set=set(), is_raw=False, multiplier=1):
     """
     String together parts from numbered subfolders with full anti-detection.
     Returns file names with end times for manifest.
@@ -755,13 +755,19 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         if not events:
             continue
         
+        # Check if this is a dmwm file
+        is_dmwm_file = file_path in dmwm_file_set
+        
         # CRITICAL: Filter problematic keys
         events = filter_problematic_keys(events)
         if not events:
             continue
         
-        # STEP 1: Add pre-move jitter
-        events_with_jitter, jitter_count, click_count, jitter_pct = add_pre_click_jitter(events, rng)
+        # STEP 1: Add pre-move jitter (skip for dmwm files)
+        if not is_dmwm_file:
+            events_with_jitter, jitter_count, click_count, jitter_pct = add_pre_click_jitter(events, rng)
+        else:
+            events_with_jitter = events
         stats['total_jitter_count'] += jitter_count
         stats['total_moves'] += click_count
         stats['jitter_percentage'] = jitter_pct
@@ -769,8 +775,8 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         # STEP 2: Detect rapid click sequences
         protected_ranges = detect_rapid_click_sequences(events_with_jitter)
         
-        # STEP 3: Add intra-file pauses (skip for RAW)
-        if not is_raw:
+        # STEP 3: Add intra-file pauses (skip for RAW and dmwm)
+        if not is_raw and not is_dmwm_file:
             events_with_pauses, intra_pause_time = insert_intra_file_pauses(
                 events_with_jitter, rng, protected_ranges
             )
@@ -778,11 +784,14 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         else:
             events_with_pauses = events_with_jitter
         
-        # STEP 4: Add idle mouse movements
-        events_with_movements, idle_time = insert_idle_mouse_movements(
-            events_with_pauses, rng, stats['movement_percentage']
-        )
-        stats['total_idle_movements'] += idle_time
+        # STEP 4: Add idle mouse movements (skip for dmwm)
+        if not is_dmwm_file:
+            events_with_movements, idle_time = insert_idle_mouse_movements(
+                events_with_pauses, rng, stats['movement_percentage']
+            )
+            stats['total_idle_movements'] += idle_time
+        else:
+            events_with_movements = events_with_pauses
         
         # Normalize timing
         base_time = min(e.get('Time', 0) for e in events_with_movements)
@@ -836,7 +845,9 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         # Update timeline
         if stringed_events:
             timeline = stringed_events[-1]['Time']
-            file_names_with_times.append(f"{file_path.name} (Ends at {format_ms_precise(timeline)})")
+            # Mark dmwm files in manifest
+            file_name = f"[UNMODIFIED] {file_path.name}" if is_dmwm_file else file_path.name
+            file_names_with_times.append(f"{file_name} (Ends at {format_ms_precise(timeline)})")
     
     return stringed_events, file_names_with_times, stats
 
@@ -852,10 +863,10 @@ def scan_for_numbered_subfolders(base_path):
     Also checks for "dont mess with me" subfolder for unmodified files.
     
     Accepts: "1", "part1", "step2", "3-action", etc.
-    Returns tuple: (numbered_folders_dict, unmodified_files_list, non_json_files_list)
+    Returns tuple: (numbered_folders_dict, dmwm_file_set, non_json_files_list)
     
     numbered_folders: {extracted_number: [list of .json files]}
-    unmodified_files: [list of files from "dont mess with me" folder]
+    dmwm_file_set: set of files from "dont mess with me" (added to regular pool)
     non_json_files: [list of non-JSON files to copy]
     """
     base = Path(base_path)
@@ -891,7 +902,11 @@ def scan_for_numbered_subfolders(base_path):
                 if file.is_file() and not file.name.endswith('.json'):
                     non_json_files.append(file)
     
-    return numbered_folders, unmodified_files, non_json_files
+    # Add unmodified files to their respective numbered folder pools
+    # They become regular files, just tracked separately
+    dmwm_file_set = set(unmodified_files)
+    
+    return numbered_folders, dmwm_file_set, non_json_files
 
 # ============================================================================
 # COMBINATION TRACKER (Virtual Queue)
@@ -1013,21 +1028,30 @@ def main():
         if not folder.is_dir():
             continue
         
-        numbered_subfolders, unmodified_files, non_json_files = scan_for_numbered_subfolders(folder)
+        numbered_subfolders, dmwm_file_set, non_json_files = scan_for_numbered_subfolders(folder)
         
-        if numbered_subfolders or unmodified_files:
+        # Add dmwm files to the appropriate numbered folder
+        for dmwm_file in dmwm_file_set:
+            # Try to determine which numbered folder it should belong to
+            # For now, add to a special '0' key or just include in general pool
+            if 0 not in numbered_subfolders:
+                numbered_subfolders[0] = []
+            numbered_subfolders[0].append(dmwm_file)
+        
+        if numbered_subfolders:
             main_folders.append({
                 'path': folder,
                 'name': folder.name,
                 'subfolders': numbered_subfolders,
-                'unmodified': unmodified_files,
+                'dmwm_files': dmwm_file_set,
                 'non_json': non_json_files
             })
             print(f"✓ Found: {folder.name}")
             if numbered_subfolders:
-                print(f"  Subfolders: {sorted(numbered_subfolders.keys())}")
-            if unmodified_files:
-                print(f"  Unmodified: {len(unmodified_files)} files")
+                nums = sorted([k for k in numbered_subfolders.keys() if k != 0])
+                print(f"  Subfolders: {nums}")
+            if dmwm_file_set:
+                print(f"  Unmodified: {len(dmwm_file_set)} files (added to pool)")
             if non_json_files:
                 print(f"  Non-JSON: {len(non_json_files)} files")
     
@@ -1050,7 +1074,7 @@ def main():
     for folder_data in main_folders:
         folder_name = folder_data['name']
         subfolder_files = folder_data['subfolders']
-        unmodified_files = folder_data['unmodified']
+        dmwm_file_set = folder_data['dmwm_files']
         non_json_files = folder_data['non_json']
         
         # D_ REMOVAL
@@ -1100,13 +1124,12 @@ def main():
         target_ms = args.target_minutes * 60000
         
         # Calculate total original duration
-        total_original_files = sum(len(files) for files in subfolder_files.values()) + len(unmodified_files)
+        total_original_files = sum(len(files) for files in subfolder_files.values())
         total_original_ms = 0
         for files in subfolder_files.values():
             for f in files:
                 total_original_ms += get_file_duration_ms(f)
-        for f in unmodified_files:
-            total_original_ms += get_file_duration_ms(f)
+
         
         # Manifest header
         manifest_lines = [
@@ -1155,36 +1178,10 @@ def main():
             while True:
                 combo = tracker.get_next_combination()
                 
-                # Maybe add unmodified file
-                use_unmodified = False
-                unmodified_file_used = None
-                if unmodified_files and rng.random() < 0.15:  # 15% chance
-                    use_unmodified = True
-                    unmodified_file_used = rng.choice(unmodified_files)
-                
-                if use_unmodified:
-                    # Load unmodified file without ANY modifications
-                    try:
-                        with open(unmodified_file_used, 'r', encoding='utf-8') as f:
-                            unmod_events = json.load(f)
-                        unmod_events = filter_problematic_keys(unmod_events)
-                        
-                        if unmod_events:
-                            base_time = min(e.get('Time', 0) for e in unmod_events)
-                            current_duration = stringed_events[-1]['Time'] if stringed_events else 0
-                            
-                            for e in unmod_events:
-                                new_event = {**e}
-                                new_event['Time'] = e['Time'] - base_time + current_duration
-                                stringed_events.append(new_event)
-                            
-                            all_file_names.append(f"[UNMODIFIED] {unmodified_file_used.name}")
-                    except Exception as e:
-                        print(f"  ⚠️  Error loading unmodified file: {e}")
-                
                 # String normal combination
                 events, file_names, stats = string_parts(
                     subfolder_files, combo, rng,
+                    dmwm_file_set=dmwm_file_set,
                     is_raw=is_raw,
                     multiplier=mult
                 )
