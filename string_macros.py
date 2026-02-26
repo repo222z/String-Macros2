@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.0.0 - Full Anti-Detection Suite
+string_macros.py - v3.1.0 - Full Anti-Detection Suite + Inefficient Type
 - Complete anti-detection suite with all features
+- Added Inefficient file type with massive pause (4-9 minutes)
+- Added "dont mess with me" folder support (unmodified files)
+- Fixed manifest format to match merge_macros exactly
+- Non-JSON files copied with @ prefix
 - Mouse jitter (20-45% of movements)
 - Idle mouse movements (fills gaps >=5 seconds)  
 - Intra-part pauses (1-4 per part, 1000-2000ms)
@@ -15,7 +19,7 @@ string_macros.py - v3.0.0 - Full Anti-Detection Suite
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.0.0"
+VERSION = "v3.1.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -694,6 +698,28 @@ class QueueFileSelector:
         return seq
 
 
+
+def insert_massive_pause(events: list, rng: random.Random) -> tuple:
+    """
+    Insert one massive pause (4-9 minutes) at random point.
+    For INEFFICIENT files only.
+    Returns (events_with_pause, pause_duration_ms, split_index)
+    """
+    if not events or len(events) < 2:
+        return events, 0, 0
+    
+    # Generate massive pause: 4-9 minutes (240000-540000ms)
+    pause_duration = rng.randint(240000, 540000)
+    
+    # Pick random split point
+    split_index = rng.randint(0, len(events) - 2)
+    
+    # Shift all events after split point
+    for i in range(split_index + 1, len(events)):
+        events[i]["Time"] += pause_duration
+    
+    return events, pause_duration, split_index
+
 # ============================================================================
 # STRING PARTS WITH ANTI-DETECTION
 # ============================================================================
@@ -701,19 +727,11 @@ class QueueFileSelector:
 def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
     """
     String together parts from numbered subfolders with full anti-detection.
-    
-    Args:
-        subfolder_files: Dict of {folder_num: [files]}
-        combination: List of selected files (one per subfolder)
-        rng: Random number generator
-        is_raw: If True, skip intra-part pauses
-        multiplier: Inter-part pause multiplier (1, 2, or 3)
-    
-    Returns:
-        (stringed_events, file_names, stats)
+    Returns file names with end times for manifest.
     """
     stringed_events = []
     timeline = 0
+    file_names_with_times = []
     
     # Statistics tracking
     stats = {
@@ -732,7 +750,6 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
             with open(file_path, 'r', encoding='utf-8') as f:
                 events = json.load(f)
         except Exception as e:
-            print(f"    ⚠️ Error loading {file_path.name}: {e}")
             continue
         
         if not events:
@@ -743,16 +760,16 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         if not events:
             continue
         
-        # STEP 1: Add pre-move jitter (20-45% of movements)
+        # STEP 1: Add pre-move jitter
         events_with_jitter, jitter_count, click_count, jitter_pct = add_pre_click_jitter(events, rng)
         stats['total_jitter_count'] += jitter_count
         stats['total_moves'] += click_count
-        stats['jitter_percentage'] = jitter_pct  # Last file's percentage
+        stats['jitter_percentage'] = jitter_pct
         
-        # STEP 2: Detect rapid click sequences (protect from pauses)
+        # STEP 2: Detect rapid click sequences
         protected_ranges = detect_rapid_click_sequences(events_with_jitter)
         
-        # STEP 3: Add intra-part pauses (skip for RAW files)
+        # STEP 3: Add intra-file pauses (skip for RAW)
         if not is_raw:
             events_with_pauses, intra_pause_time = insert_intra_file_pauses(
                 events_with_jitter, rng, protected_ranges
@@ -761,52 +778,44 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
         else:
             events_with_pauses = events_with_jitter
         
-        # STEP 4: Add idle mouse movements (fills gaps >=5 seconds)
+        # STEP 4: Add idle mouse movements
         events_with_movements, idle_time = insert_idle_mouse_movements(
             events_with_pauses, rng, stats['movement_percentage']
         )
         stats['total_idle_movements'] += idle_time
         
-        # Normalize timing to start at 0
+        # Normalize timing
         base_time = min(e.get('Time', 0) for e in events_with_movements)
         
-        # STEP 5: Inter-part pause (between parts)
+        # STEP 5: Inter-file pause (between files)
         if idx > 0:
-            # Calculate inter-part pause with multiplier
             inter_pause = int(rng.uniform(500.123, 4999.987) * multiplier)
             stats['total_inter_pauses'] += inter_pause
             
-            # Add cursor transition during inter-part pause
+            # Add cursor transition during inter-pause
             if stringed_events and events_with_movements:
-                # Get last cursor position from previous part
                 last_cursor_event = None
                 for e in reversed(stringed_events):
                     if e.get('X') is not None and e.get('Y') is not None:
                         last_cursor_event = e
                         break
                 
-                # Get first cursor position from current part
                 first_cursor_event = None
                 for e in events_with_movements:
                     if e.get('X') is not None and e.get('Y') is not None:
                         first_cursor_event = e
                         break
                 
-                # Add smooth transition if positions differ
                 if last_cursor_event and first_cursor_event:
                     last_x, last_y = int(last_cursor_event['X']), int(last_cursor_event['Y'])
                     first_x, first_y = int(first_cursor_event['X']), int(first_cursor_event['Y'])
                     
                     if (last_x != first_x) or (last_y != first_y):
-                        # Generate smooth path during inter-pause
                         transition_path = generate_human_path(
-                            last_x, last_y,
-                            first_x, first_y,
-                            inter_pause,
-                            rng
+                            last_x, last_y, first_x, first_y,
+                            inter_pause, rng
                         )
                         
-                        # Insert transition events (skip last, will be first event of next part)
                         for rel_time, x, y in transition_path[:-1]:
                             if rel_time < inter_pause:
                                 stringed_events.append({
@@ -818,17 +827,19 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
             
             timeline += inter_pause
         
-        # STEP 6: Add events from current part
+        # STEP 6: Add events from current file
         for event in events_with_movements:
             new_event = {**event}
             new_event['Time'] = event['Time'] - base_time + timeline
             stringed_events.append(new_event)
         
-        # Update timeline (after this part)
+        # Update timeline
         if stringed_events:
             timeline = stringed_events[-1]['Time']
+            file_names_with_times.append(f"{file_path.name} (Ends at {format_ms_precise(timeline)})")
     
-    return stringed_events, [f[1].name for f in combination], stats
+    return stringed_events, file_names_with_times, stats
+
 
 
 # ============================================================================
@@ -838,14 +849,33 @@ def string_parts(subfolder_files, combination, rng, is_raw=False, multiplier=1):
 def scan_for_numbered_subfolders(base_path):
     """
     Scans folder for subfolders with numbers in their names.
+    Also checks for "dont mess with me" subfolder for unmodified files.
+    
     Accepts: "1", "part1", "step2", "3-action", etc.
-    Returns dict: {extracted_number: [list of .json files]}
+    Returns tuple: (numbered_folders_dict, unmodified_files_list, non_json_files_list)
+    
+    numbered_folders: {extracted_number: [list of .json files]}
+    unmodified_files: [list of files from "dont mess with me" folder]
+    non_json_files: [list of non-JSON files to copy]
     """
     base = Path(base_path)
     numbered_folders = {}
+    unmodified_files = []
+    non_json_files = []
     
     for item in base.iterdir():
         if not item.is_dir():
+            # Collect non-JSON files in root
+            if not item.name.endswith('.json'):
+                non_json_files.append(item)
+            continue
+        
+        # Check for "dont mess with me" folder (case-insensitive)
+        if item.name.lower() == 'dont mess with me':
+            # Add all JSON files from this folder as unmodified
+            dmwm_files = sorted(item.glob("*.json"))
+            unmodified_files.extend(dmwm_files)
+            print(f"  ⚠️  Found 'dont mess with me' folder: {len(dmwm_files)} unmodified files")
             continue
         
         # Extract number from folder name using regex
@@ -855,8 +885,13 @@ def scan_for_numbered_subfolders(base_path):
             json_files = sorted(item.glob("*.json"))
             if json_files:
                 numbered_folders[folder_num] = json_files
+                
+            # Also collect non-JSON files from numbered folders
+            for file in item.iterdir():
+                if file.is_file() and not file.name.endswith('.json'):
+                    non_json_files.append(file)
     
-    return numbered_folders
+    return numbered_folders, unmodified_files, non_json_files
 
 # ============================================================================
 # COMBINATION TRACKER (Virtual Queue)
@@ -915,11 +950,14 @@ class CombinationTracker:
 # MAIN FUNCTION
 # ============================================================================
 
+# UPDATED MAIN FUNCTION FOR STRING_MACROS v3.1.0
+# This replaces the existing main() function
+
 def main():
-    parser = argparse.ArgumentParser(description="String Macros v3.0.0")
+    parser = argparse.ArgumentParser(description="String Macros v3.1.0")
     parser.add_argument("input_root", type=str)
     parser.add_argument("output_root", type=Path)
-    parser.add_argument("--versions", type=int, default=9, help="Total versions (default: 9 = 3 Raw + 6 Normal)")
+    parser.add_argument("--versions", type=int, default=12, help="Total versions (default: 12 = 3 Raw + 3 Inef + 6 Normal)")
     parser.add_argument("--target-minutes", type=int, default=35)
     parser.add_argument("--bundle-id", type=int, required=True)
     parser.add_argument("--no-chat", action="store_true", help="Disable chat inserts")
@@ -930,7 +968,7 @@ def main():
     print("="*70)
     print(f"Bundle ID: {args.bundle_id}")
     print(f"Target: {args.target_minutes} minutes per file")
-    print(f"Versions: {args.versions} total")
+    print(f"Versions: {args.versions} total (3 Raw + 3 Inef + 6 Normal)")
     print(f"Chat: {'DISABLED' if args.no_chat else 'ENABLED (50% chance)'}")
     print("="*70)
     
@@ -944,7 +982,7 @@ def main():
     bundle_dir = output_root / f"stringed_bundle_{args.bundle_id}"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load chat files (optional)
+    # Load chat files
     chat_files = []
     if not args.no_chat:
         chat_dir = Path(args.input_root).parent / "chat inserts"
@@ -952,12 +990,20 @@ def main():
             chat_files = list(chat_dir.glob("*.json"))
             if chat_files:
                 print(f"✓ Found {len(chat_files)} chat insert files")
-            else:
-                print(f"⚠️ Chat inserts folder empty")
-        else:
-            print(f"⚠️ No chat inserts folder found")
-    else:
-        print(f"🔕 Chat inserts DISABLED")
+    
+    # Look for logout file
+    logout_file = None
+    logout_patterns = ["logout.json", "- logout.json", "-logout.json", "logout", "- logout", "-logout"]
+    for location_dir in [search_base, search_base.parent]:
+        if logout_file:
+            break
+        for pattern in logout_patterns:
+            test_file = location_dir / pattern
+            for test_path in [test_file, Path(str(test_file) + ".json")]:
+                if test_path.exists() and test_path.is_file():
+                    logout_file = test_path
+                    print(f"✓ Found logout file: {logout_file.name}")
+                    break
     
     print()
     
@@ -967,16 +1013,23 @@ def main():
         if not folder.is_dir():
             continue
         
-        numbered_subfolders = scan_for_numbered_subfolders(folder)
+        numbered_subfolders, unmodified_files, non_json_files = scan_for_numbered_subfolders(folder)
         
-        if numbered_subfolders:
+        if numbered_subfolders or unmodified_files:
             main_folders.append({
                 'path': folder,
                 'name': folder.name,
-                'subfolders': numbered_subfolders
+                'subfolders': numbered_subfolders,
+                'unmodified': unmodified_files,
+                'non_json': non_json_files
             })
             print(f"✓ Found: {folder.name}")
-            print(f"  Subfolders: {sorted(numbered_subfolders.keys())}")
+            if numbered_subfolders:
+                print(f"  Subfolders: {sorted(numbered_subfolders.keys())}")
+            if unmodified_files:
+                print(f"  Unmodified: {len(unmodified_files)} files")
+            if non_json_files:
+                print(f"  Non-JSON: {len(non_json_files)} files")
     
     if not main_folders:
         print("❌ No folders with numbered subfolders found!")
@@ -985,7 +1038,7 @@ def main():
     print(f"\n📁 Total folders to process: {len(main_folders)}")
     print("="*70)
     
-    # Initialize global chat queue (persists across all folders)
+    # Initialize global chat queue
     rng = random.Random(args.bundle_id * 42)
     global_chat_queue = list(chat_files) if chat_files else []
     if global_chat_queue:
@@ -997,97 +1050,179 @@ def main():
     for folder_data in main_folders:
         folder_name = folder_data['name']
         subfolder_files = folder_data['subfolders']
+        unmodified_files = folder_data['unmodified']
+        non_json_files = folder_data['non_json']
         
-        # D_ REMOVAL: Remove D_ or d_ from folder name
+        # D_ REMOVAL
         cleaned_folder_name = re.sub(r'[Dd]_', '', folder_name)
         
-        # Extract folder number for version code (e.g. "47- Canifis" → 47)
+        # Extract folder number
         folder_num_match = re.search(r'\d+', cleaned_folder_name)
         folder_number = int(folder_num_match.group()) if folder_num_match else 0
         
         print(f"\n🔨 Processing: {cleaned_folder_name}")
         
-        tracker = CombinationTracker(subfolder_files, rng)
-        
+        # Create output folder
         out_folder = bundle_dir / cleaned_folder_name
         out_folder.mkdir(parents=True, exist_ok=True)
         
+        # Copy logout file with @ prefix
+        if logout_file:
+            try:
+                original_name = logout_file.name
+                if original_name.startswith("-"):
+                    new_name = f"@ {folder_number} {original_name[1:].strip()}".upper()
+                else:
+                    new_name = f"@ {folder_number} {original_name}".upper()
+                shutil.copy2(logout_file, out_folder / new_name)
+                print(f"  ✓ Copied logout: {new_name}")
+            except Exception as e:
+                print(f"  ✗ Error copying logout: {e}")
+        
+        # Copy non-JSON files with @ prefix
+        for non_json_file in non_json_files:
+            try:
+                original_name = non_json_file.name
+                if original_name.startswith("-"):
+                    new_name = f"@ {folder_number} {original_name[1:].strip()}"
+                else:
+                    new_name = f"@ {folder_number} {original_name}"
+                shutil.copy2(non_json_file, out_folder / new_name)
+                print(f"  ✓ Copied non-JSON: {new_name}")
+            except Exception as e:
+                print(f"  ✗ Error copying {non_json_file.name}: {e}")
+        
+        if not subfolder_files:
+            print("  ⚠️  No numbered subfolders to process")
+            continue
+        
+        tracker = CombinationTracker(subfolder_files, rng)
         target_ms = args.target_minutes * 60000
         
+        # Calculate total original duration
+        total_original_files = sum(len(files) for files in subfolder_files.values()) + len(unmodified_files)
+        total_original_ms = 0
+        for files in subfolder_files.values():
+            for f in files:
+                total_original_ms += get_file_duration_ms(f)
+        for f in unmodified_files:
+            total_original_ms += get_file_duration_ms(f)
+        
         # Manifest header
-        total_original_files = sum(len(files) for files in subfolder_files.values())
         manifest_lines = [
             f"MANIFEST FOR FOLDER: {cleaned_folder_name}",
             "=" * 40,
             f"Script Version: {VERSION}",
             f"Stringed Bundle: stringed_bundle_{args.bundle_id}",
-            f"Total Original Parts: {total_original_files}",
+            f"Total Original Files: {total_original_files}",
+            f"Total Original Files Duration: {format_ms_precise(total_original_ms)}",
             f"Subfolders: {sorted(subfolder_files.keys())}",
             ""
         ]
         
-        # Generate versions: 3 Raw + 6 Normal = 9 total
-        version_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
+        # Version loop: 3 Raw + 3 Inef + 6 Normal = 12 total
+        version_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
         num_raw = 3
+        num_inef = 3
         num_normal = 6
         
-        for v_idx in range(args.versions):
-            v_letter = version_letters[v_idx] if v_idx < len(version_letters) else chr(65 + v_idx)
+        for v_idx in range(min(args.versions, 12)):
+            v_letter = version_letters[v_idx]
             
             # Determine file type
             is_raw = (v_idx < num_raw)
+            is_inef = (num_raw <= v_idx < num_raw + num_inef)
+            is_normal = (v_idx >= num_raw + num_inef)
             
-            # Set multiplier based on file type
+            # Set multiplier
             if is_raw:
-                # Raw: x1 (50%), x2 (30%), x3 (20%)
                 mult = rng.choices([1, 2, 3], weights=[50, 30, 20], k=1)[0]
-            else:
-                # Normal: x1 (62.5%), x2 (37.5%)
+            elif is_inef:
+                mult = rng.choices([2, 3], weights=[50, 50], k=1)[0]
+            else:  # normal
                 mult = rng.choices([1, 2], weights=[62.5, 37.5], k=1)[0]
             
-            # Keep stringing until we reach target
+            # String files until target reached
             stringed_events = []
-            all_combos = []
-            all_stats = []
+            all_file_names = []
+            total_intra = 0
+            total_inter = 0
+            total_idle = 0
+            total_normal_pauses = 0
+            massive_pause_ms = 0
+            jitter_pct = 0
             
             while True:
                 combo = tracker.get_next_combination()
+                
+                # Maybe add unmodified file
+                use_unmodified = False
+                unmodified_file_used = None
+                if unmodified_files and rng.random() < 0.15:  # 15% chance
+                    use_unmodified = True
+                    unmodified_file_used = rng.choice(unmodified_files)
+                
+                if use_unmodified:
+                    # Load unmodified file without ANY modifications
+                    try:
+                        with open(unmodified_file_used, 'r', encoding='utf-8') as f:
+                            unmod_events = json.load(f)
+                        unmod_events = filter_problematic_keys(unmod_events)
+                        
+                        if unmod_events:
+                            base_time = min(e.get('Time', 0) for e in unmod_events)
+                            current_duration = stringed_events[-1]['Time'] if stringed_events else 0
+                            
+                            for e in unmod_events:
+                                new_event = {**e}
+                                new_event['Time'] = e['Time'] - base_time + current_duration
+                                stringed_events.append(new_event)
+                            
+                            all_file_names.append(f"[UNMODIFIED] {unmodified_file_used.name}")
+                    except Exception as e:
+                        print(f"  ⚠️  Error loading unmodified file: {e}")
+                
+                # String normal combination
                 events, file_names, stats = string_parts(
-                    subfolder_files, combo, rng, 
-                    is_raw=is_raw, 
+                    subfolder_files, combo, rng,
+                    is_raw=is_raw,
                     multiplier=mult
                 )
                 
                 if not events:
                     break
                 
-                # Check if adding would exceed target significantly
+                # Check if adding would exceed target
                 current_duration = stringed_events[-1]['Time'] if stringed_events else 0
                 new_duration = events[-1]['Time'] if events else 0
                 potential_total = current_duration + new_duration
                 
-                # ±5% margin
                 margin = int(target_ms * 0.05)
                 if potential_total > target_ms + margin and stringed_events:
-                    # Close enough, stop
                     break
                 
-                # Add this string to the total
+                # Add to string
                 offset = current_duration
                 for e in events:
                     new_event = {**e}
                     new_event['Time'] = e['Time'] + offset
                     stringed_events.append(new_event)
                 
-                all_combos.append((combo, file_names))
-                all_stats.append(stats)
+                all_file_names.extend(file_names)
+                total_intra += stats['total_intra_pauses']
+                total_inter += stats['total_inter_pauses']
+                total_idle += stats['total_idle_movements']
+                jitter_pct = stats['jitter_percentage']
                 
-                # Safety limit
-                if len(all_combos) > 50:
+                if len(all_file_names) > 50:
                     break
             
             if not stringed_events:
                 continue
+            
+            # Add massive pause for INEFFICIENT
+            if is_inef and len(stringed_events) > 1:
+                stringed_events, massive_pause_ms, split_idx = insert_massive_pause(stringed_events, rng)
             
             # Calculate total duration
             total_duration = stringed_events[-1]['Time']
@@ -1095,22 +1230,20 @@ def main():
             total_sec = int((total_duration % 60000) / 1000)
             
             # File prefix and name
-            prefix = "^" if is_raw else ""
+            if is_raw:
+                prefix = "^"
+            elif is_inef:
+                prefix = "¬¬"
+            else:
+                prefix = ""
+            
             v_code = f"{folder_number}_{v_letter}"
             fname = f"{prefix}{v_code}_{total_min}m{total_sec}s.json"
             
             # Save file
             (out_folder / fname).write_text(json.dumps(stringed_events, indent=2))
             
-            # Aggregate stats
-            total_jitter = sum(s['total_jitter_count'] for s in all_stats)
-            total_moves = sum(s['total_moves'] for s in all_stats)
-            jitter_pct = (all_stats[-1]['jitter_percentage'] * 100) if all_stats else 0
-            total_intra = sum(s['total_intra_pauses'] for s in all_stats)
-            total_inter = sum(s['total_inter_pauses'] for s in all_stats)
-            total_idle = sum(s['total_idle_movements'] for s in all_stats)
-            
-            # Add to manifest
+            # Build manifest entry
             separator = "=" * 40
             version_label = f"Version {prefix}{v_code}_{total_min}m{total_sec}s:"
             
@@ -1119,31 +1252,56 @@ def main():
                     separator,
                     "",
                     version_label,
-                    f"FILE TYPE: Raw (no intra-part pauses, no chat)",
-                    f"  Inter-part pauses: {format_ms_precise(total_inter)} (x{mult} Multiplier)",
-                    f"  Idle Mouse Movements: {format_ms_precise(total_idle)}",
-                    f"  Mouse Jitter: {int(jitter_pct)}%",
+                    f"FILE TYPE: Raw (no time-adding features, no chat)",
+                    f"  Between files pause: {format_ms_precise(total_inter)} (x{mult} Multiplier)",
+                    f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
+                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
                     ""
                 ]
-            else:
+            elif is_inef:
+                total_pause = total_intra + total_inter
+                original_intra = total_intra
+                original_inter = int(total_inter / mult) if mult > 0 else total_inter
+                
+                manifest_entry = [
+                    separator,
+                    "",
+                    version_label,
+                    f"FILE TYPE: Inefficient",
+                    f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
+                    f"BREAKDOWN",
+                    f"total before    - Within original files pauses: {format_ms_precise(original_intra)}",
+                    f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
+                    f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
+                    f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
+                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
+                    ""
+                ]
+                if massive_pause_ms > 0:
+                    manifest_entry.insert(-2, f"Massive P1: {format_ms_precise(massive_pause_ms)}")
+            else:  # normal
+                total_pause = total_intra + total_inter
+                original_intra = total_intra
+                original_inter = int(total_inter / mult) if mult > 0 else total_inter
+                
                 manifest_entry = [
                     separator,
                     "",
                     version_label,
                     f"FILE TYPE: Normal",
-                    f"  Total PAUSE ADDED: {format_ms_precise(total_intra + total_inter)} (x{mult} Multiplier)",
+                    f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
                     f"BREAKDOWN",
-                    f"  - Within parts pauses: {format_ms_precise(total_intra)}",
-                    f"  - Between parts pauses: {format_ms_precise(total_inter)}",
-                    f"  Idle Mouse Movements: {format_ms_precise(total_idle)}",
-                    f"  Mouse Jitter: {int(jitter_pct)}%",
+                    f"total before    - Within original files pauses: {format_ms_precise(original_intra)}",
+                    f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
+                    f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
+                    f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
+                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
                     ""
                 ]
             
             # Add file list
-            for combo, file_names in all_combos:
-                for folder_num, file_path in combo:
-                    manifest_entry.append(f"  F{folder_num}* {file_path.name}")
+            for file_name in all_file_names:
+                manifest_entry.append(f"  * {file_name}")
             
             manifest_lines.extend(manifest_entry)
         
