@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.3.2"
+VERSION = "v3.4.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -769,8 +769,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         
         # Add smooth cursor transition if not first file
         if cycle_events:
-            # Add buffer between files (0.25-0.4 seconds, non-rounded)
-            buffer_ms = int(rng.uniform(250.123, 399.987))
+            # Add buffer between files (0.1-0.2 seconds, non-rounded)
+            buffer_ms = int(rng.uniform(100.123, 199.987))
             timeline += buffer_ms
             
             # Get last position
@@ -935,25 +935,58 @@ def scan_for_numbered_subfolders(base_path):
     return numbered_folders, dmwm_file_set, non_json_files
 
 # ============================================================================
-# COMBINATION TRACKER (Virtual Queue)
+# PERSISTENT COMBINATION TRACKER (Remembers Across Runs)
 # ============================================================================
 
-class CombinationTracker:
+class PersistentCombinationTracker:
     """
     Tracks which file combinations have been used.
+    PERSISTS across runs - saves to disk and loads on startup.
     Ensures no repeats until ALL combinations exhausted.
     Handles optional folders (38% chance to include).
+    
+    Storage: .github/string_combinations/{folder_name}.json
     """
-    def __init__(self, subfolder_files, rng):
+    def __init__(self, subfolder_files, rng, folder_name, storage_dir):
         self.subfolder_files = subfolder_files
         self.rng = rng
-        self.used_combinations = set()
+        self.folder_name = folder_name
+        self.storage_file = storage_dir / f"{folder_name}.json"
         
-        # Calculate total possible combinations (simplified - doesn't account for optional)
+        # Load previously used combinations
+        self.used_combinations = self._load_used_combinations()
+        
+        # Calculate total possible combinations
         self.total_combinations = 1
         for folder_data in subfolder_files.values():
             files = folder_data['files']
             self.total_combinations *= len(files)
+        
+        print(f"  📊 Combination Tracker: {len(self.used_combinations):,} / {self.total_combinations:,} used")
+    
+    def _load_used_combinations(self):
+        """Load previously used combinations from disk"""
+        if self.storage_file.exists():
+            try:
+                with open(self.storage_file, 'r') as f:
+                    data = json.load(f)
+                    # Convert list back to set of tuples
+                    return set(tuple(tuple(item) for item in combo) for combo in data)
+            except Exception as e:
+                print(f"  ⚠️  Could not load combinations: {e}")
+                return set()
+        return set()
+    
+    def _save_used_combinations(self):
+        """Save used combinations to disk"""
+        try:
+            self.storage_file.parent.mkdir(parents=True, exist_ok=True)
+            # Convert set of tuples to list for JSON
+            data = [list(list(item) for item in combo) for combo in self.used_combinations]
+            with open(self.storage_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"  ⚠️  Could not save combinations: {e}")
     
     def get_next_combination(self):
         """
@@ -963,10 +996,12 @@ class CombinationTracker:
         """
         if len(self.used_combinations) >= self.total_combinations:
             # All combinations used - reset
+            print(f"  🔄 All {self.total_combinations:,} combinations used! Resetting...")
             self.used_combinations.clear()
+            self._save_used_combinations()
         
         # Try to find unused combination
-        max_attempts = min(self.total_combinations * 2, 1000)
+        max_attempts = min(self.total_combinations * 2, 2000)
         for _ in range(max_attempts):
             # Pick one random file from each subfolder
             combination = []
@@ -994,6 +1029,7 @@ class CombinationTracker:
             
             if signature not in self.used_combinations:
                 self.used_combinations.add(signature)
+                self._save_used_combinations()  # Save immediately
                 return combination
         
         # Fallback: return any combination
@@ -1172,7 +1208,14 @@ def main():
             print("  ⚠️  No numbered subfolders to process")
             continue
         
-        tracker = CombinationTracker(subfolder_files, rng)
+        # Create storage directory for persistent tracking
+        storage_dir = Path('.github/string_combinations')
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use persistent tracker (remembers across runs)
+        tracker = PersistentCombinationTracker(
+            subfolder_files, rng, cleaned_folder_name, storage_dir
+        )
         target_ms = args.target_minutes * 60000
         
         # Calculate total original duration
