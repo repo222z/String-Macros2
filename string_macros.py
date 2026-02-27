@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.3.0"
+VERSION = "v3.3.1"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -769,6 +769,10 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         
         # Add smooth cursor transition if not first file
         if cycle_events:
+            # Add buffer between files (0.25-0.4 seconds, non-rounded)
+            buffer_ms = int(rng.uniform(250.123, 399.987))
+            timeline += buffer_ms
+            
             # Get last position
             last_x, last_y = None, None
             for e in reversed(cycle_events):
@@ -783,23 +787,20 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     first_x, first_y = int(e['X']), int(e['Y'])
                     break
             
-            # Add smooth transition (no pause, just movement)
+            # Add smooth transition during buffer
             if last_x and first_x and (last_x != first_x or last_y != first_y):
-                transition_duration = rng.randint(100, 300)
                 transition_path = generate_human_path(
                     last_x, last_y, first_x, first_y,
-                    transition_duration, rng
+                    buffer_ms, rng
                 )
                 
                 for rel_time, x, y in transition_path[:-1]:
                     cycle_events.append({
                         'Type': 'MouseMove',
-                        'Time': timeline + rel_time,
+                        'Time': timeline - buffer_ms + rel_time,
                         'X': x,
                         'Y': y
                     })
-                
-                timeline += transition_duration
         
         # Add events from current file
         for event in events:
@@ -1176,9 +1177,12 @@ def main():
         target_ms = args.target_minutes * 60000
         
         # Calculate total original duration
-        total_original_files = sum(len(files) for files in subfolder_files.values())
+        total_original_files = 0
         total_original_ms = 0
-        for files in subfolder_files.values():
+        
+        for folder_data in subfolder_files.values():
+            files = folder_data['files']
+            total_original_files += len(files)
             for f in files:
                 total_original_ms += get_file_duration_ms(f)
 
