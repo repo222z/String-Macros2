@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.4.0"
+VERSION = "v3.4.1"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -794,7 +794,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     buffer_ms, rng
                 )
                 
-                for rel_time, x, y in transition_path[:-1]:
+                # Include ALL transition points (don't skip last one)
+                for rel_time, x, y in transition_path:
                     cycle_events.append({
                         'Type': 'MouseMove',
                         'Time': timeline - buffer_ms + rel_time,
@@ -951,7 +952,12 @@ class PersistentCombinationTracker:
         self.subfolder_files = subfolder_files
         self.rng = rng
         self.folder_name = folder_name
-        self.storage_file = storage_dir / f"{folder_name}.json"
+        
+        # Sanitize folder name for safe filename (replace unsafe chars)
+        safe_name = folder_name.replace('/', '_').replace('\\', '_').replace(':', '_')
+        self.storage_file = storage_dir / f"{safe_name}.json"
+        
+        print(f"  💾 Tracking file: {self.storage_file}")
         
         # Load previously used combinations
         self.used_combinations = self._load_used_combinations()
