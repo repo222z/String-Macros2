@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.4.1"
+VERSION = "v3.4.2"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -769,8 +769,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         
         # Add smooth cursor transition if not first file
         if cycle_events:
-            # Add buffer between files (0.1-0.2 seconds, non-rounded)
-            buffer_ms = int(rng.uniform(100.123, 199.987))
+            # Add buffer between files (0.25-0.34 seconds, non-rounded)
+            buffer_ms = int(rng.uniform(250.123, 339.987))
             timeline += buffer_ms
             
             # Get last position
@@ -802,6 +802,15 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                         'X': x,
                         'Y': y
                     })
+                
+                # CRITICAL: Add one final MouseMove to EXACT start position
+                # This ensures cursor is at Point B before file starts
+                cycle_events.append({
+                    'Type': 'MouseMove',
+                    'Time': timeline,
+                    'X': first_x,
+                    'Y': first_y
+                })
         
         # Add events from current file
         for event in events:
@@ -986,13 +995,26 @@ class PersistentCombinationTracker:
     def _save_used_combinations(self):
         """Save used combinations to disk"""
         try:
+            print(f"  💾 Attempting to save {len(self.used_combinations)} combinations...")
+            print(f"  💾 File path: {self.storage_file}")
+            print(f"  💾 Parent dir: {self.storage_file.parent}")
+            
             self.storage_file.parent.mkdir(parents=True, exist_ok=True)
+            
             # Convert set of tuples to list for JSON
             data = [list(list(item) for item in combo) for combo in self.used_combinations]
+            
+            print(f"  💾 Converted {len(data)} combinations to JSON format")
+            
             with open(self.storage_file, 'w') as f:
-                json.dump(data, f)
+                json.dump(data, f, indent=2)
+            
+            print(f"  ✓ Successfully saved to: {self.storage_file}")
+            
         except Exception as e:
             print(f"  ⚠️  Could not save combinations: {e}")
+            import traceback
+            traceback.print_exc()
     
     def get_next_combination(self):
         """
@@ -1214,9 +1236,10 @@ def main():
             print("  ⚠️  No numbered subfolders to process")
             continue
         
-        # Create storage directory for persistent tracking
-        storage_dir = Path('.github/string_combinations')
+        # Create storage directory for persistent tracking (absolute path)
+        storage_dir = Path('.github/string_combinations').resolve()
         storage_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  📂 Storage directory: {storage_dir}")
         
         # Use persistent tracker (remembers across runs)
         tracker = PersistentCombinationTracker(
@@ -1447,7 +1470,7 @@ def main():
             # Add file list with F#* prefix and cumulative timeline
             for folder_num, filename, is_dmwm, end_time in all_file_info_with_times:
                 prefix = "[UNMODIFIED] " if is_dmwm else ""
-                manifest_entry.append(f"  F{folder_num}* {prefix}{filename} (Ends at {format_ms_precise(end_time)})")
+                manifest_entry.append(f"  * {prefix}{filename} (Ends at {format_ms_precise(end_time)})")
             
             manifest_lines.extend(manifest_entry)
         
