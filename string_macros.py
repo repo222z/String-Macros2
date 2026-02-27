@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.3.1"
+VERSION = "v3.3.2"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -735,7 +735,7 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     
     Returns:
         (cycle_events, file_info_list, has_dmwm)
-        file_info_list: [(folder_num, filename, is_dmwm), ...]
+        file_info_list: [(folder_num, filename, is_dmwm, end_time_within_cycle), ...]
         has_dmwm: True if any dmwm file in cycle
     """
     cycle_events = []
@@ -808,12 +808,11 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
             new_event['Time'] = event['Time'] - base_time + timeline
             cycle_events.append(new_event)
         
-        # Update timeline
+        # Update timeline and track THIS file's end time
         if cycle_events:
             timeline = cycle_events[-1]['Time']
-        
-        # Track file info for manifest
-        file_info_list.append((folder_num, file_path.name, is_dmwm))
+            # Track file info with its individual end time
+            file_info_list.append((folder_num, file_path.name, is_dmwm, timeline))
     
     return cycle_events, file_info_list, has_dmwm
 
@@ -1300,9 +1299,11 @@ def main():
                     stringed_events.append(new_event)
                 
                 # Track file info with cumulative timeline
-                final_time = stringed_events[-1]['Time'] if stringed_events else 0
-                for folder_num, filename, is_dmwm in file_info:
-                    all_file_info_with_times.append((folder_num, filename, is_dmwm, final_time))
+                # file_info now includes end time within cycle
+                for folder_num, filename, is_dmwm, end_time_in_cycle in file_info:
+                    # Add offset to get actual end time in merged events
+                    actual_end_time = end_time_in_cycle + offset
+                    all_file_info_with_times.append((folder_num, filename, is_dmwm, actual_end_time))
                 
                 # Update stats
                 total_intra += stats['intra_pauses']
