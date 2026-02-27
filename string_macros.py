@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.4.2"
+VERSION = "v3.4.3"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -964,7 +964,7 @@ class PersistentCombinationTracker:
         
         # Sanitize folder name for safe filename (replace unsafe chars)
         safe_name = folder_name.replace('/', '_').replace('\\', '_').replace(':', '_')
-        self.storage_file = storage_dir / f"{safe_name}.json"
+        self.storage_file = storage_dir / f"{safe_name}.txt"
         
         print(f"  💾 Tracking file: {self.storage_file}")
         
@@ -984,9 +984,9 @@ class PersistentCombinationTracker:
         if self.storage_file.exists():
             try:
                 with open(self.storage_file, 'r') as f:
-                    data = json.load(f)
-                    # Convert list back to set of tuples
-                    return set(tuple(tuple(item) for item in combo) for combo in data)
+                    # Each line is a combination signature
+                    lines = f.read().strip().split('\n')
+                    return set(line for line in lines if line)
             except Exception as e:
                 print(f"  ⚠️  Could not load combinations: {e}")
                 return set()
@@ -995,24 +995,19 @@ class PersistentCombinationTracker:
     def _save_used_combinations(self):
         """Save used combinations to disk"""
         try:
-            print(f"  💾 Attempting to save {len(self.used_combinations)} combinations...")
-            print(f"  💾 File path: {self.storage_file}")
-            print(f"  💾 Parent dir: {self.storage_file.parent}")
+            print(f"  💾 Saving {len(self.used_combinations)} combinations...")
             
             self.storage_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Convert set of tuples to list for JSON
-            data = [list(list(item) for item in combo) for combo in self.used_combinations]
-            
-            print(f"  💾 Converted {len(data)} combinations to JSON format")
-            
+            # Write each combination signature as a line
             with open(self.storage_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                for combo_sig in sorted(self.used_combinations):
+                    f.write(combo_sig + '\n')
             
-            print(f"  ✓ Successfully saved to: {self.storage_file}")
+            print(f"  ✓ Saved to: {self.storage_file}")
             
         except Exception as e:
-            print(f"  ⚠️  Could not save combinations: {e}")
+            print(f"  ⚠️  Could not save: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1052,8 +1047,8 @@ class PersistentCombinationTracker:
             if not combination:
                 continue
             
-            # Create signature for this combination
-            signature = tuple((fn, f.name) for fn, f in combination)
+            # Create signature for this combination (simple string)
+            signature = "|".join(f"{fn}:{f.name}" for fn, f in combination)
             
             if signature not in self.used_combinations:
                 self.used_combinations.add(signature)
