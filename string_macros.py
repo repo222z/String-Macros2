@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.4.4"
+VERSION = "v3.5.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -769,8 +769,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         
         # Add smooth cursor transition if not first file
         if cycle_events:
-            # Add buffer between files (0.25-0.34 seconds, non-rounded)
-            buffer_ms = int(rng.uniform(250.123, 339.987))
+            # Add buffer between files (0.37-0.65 seconds, non-rounded)
+            buffer_ms = int(rng.uniform(370.123, 649.987))
             timeline += buffer_ms
             
             # Get last position
@@ -1023,30 +1023,29 @@ class PersistentCombinationTracker:
             traceback.print_exc()
     
     def _save_used_combinations(self):
-        """Save used combinations to disk"""
+        """Save used combinations to disk - WRITES ALL combinations"""
         try:
             print(f"\n  💾 === SAVE CALLED ===")
-            print(f"  💾 Combinations to save: {len(self.used_combinations)}")
+            print(f"  💾 Total combinations in memory: {len(self.used_combinations)}")
             print(f"  💾 Target file: {self.storage_file}")
-            print(f"  💾 File absolute path: {self.storage_file.resolve()}")
             
             self.storage_file.parent.mkdir(parents=True, exist_ok=True)
-            print(f"  💾 Directory ensured: {self.storage_file.parent}")
             
-            # Write each combination signature as a line
+            # CRITICAL: Write ALL combinations (overwrite file completely)
+            # This ensures we never lose data even if script crashes
             with open(self.storage_file, 'w') as f:
-                count = 0
                 for combo_sig in sorted(self.used_combinations):
                     f.write(combo_sig + '\n')
-                    count += 1
-                print(f"  💾 Wrote {count} lines")
-            
-            print(f"  ✅ SAVE COMPLETED: {self.storage_file}")
             
             # Verify
             if self.storage_file.exists():
                 size = self.storage_file.stat().st_size
-                print(f"  ✅ File verified - Size: {size} bytes")
+                with open(self.storage_file, 'r') as f:
+                    lines = len(f.readlines())
+                print(f"  ✅ SAVED {lines} combinations ({size} bytes)")
+                print(f"  ✅ File: {self.storage_file.resolve()}")
+            else:
+                print(f"  ❌ File does NOT exist after save!")
             
         except Exception as e:
             print(f"  ❌ SAVE FAILED: {e}")
