@@ -16,7 +16,7 @@ string_macros.py - v3.3.0 - Major Architecture Update
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.4.3"
+VERSION = "v3.4.4"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -978,6 +978,10 @@ class PersistentCombinationTracker:
             self.total_combinations *= len(files)
         
         print(f"  📊 Combination Tracker: {len(self.used_combinations):,} / {self.total_combinations:,} used")
+        
+        # TEST: Immediately try to write to verify file creation works
+        print(f"  🧪 Testing file write capability...")
+        self._test_write()
     
     def _load_used_combinations(self):
         """Load previously used combinations from disk"""
@@ -992,22 +996,60 @@ class PersistentCombinationTracker:
                 return set()
         return set()
     
+    def _test_write(self):
+        """Test if we can actually write to the file"""
+        try:
+            # Ensure directory exists
+            self.storage_file.parent.mkdir(parents=True, exist_ok=True)
+            print(f"  🧪 Directory created/exists: {self.storage_file.parent}")
+            
+            # Try to write a test line
+            with open(self.storage_file, 'a') as f:
+                f.write("# Test write - tracker initialized\n")
+            
+            print(f"  ✅ TEST WRITE SUCCESS! File created at: {self.storage_file}")
+            
+            # Verify file exists
+            if self.storage_file.exists():
+                print(f"  ✅ File exists and is readable!")
+                size = self.storage_file.stat().st_size
+                print(f"  ✅ File size: {size} bytes")
+            else:
+                print(f"  ❌ File does NOT exist after write!")
+                
+        except Exception as e:
+            print(f"  ❌ TEST WRITE FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _save_used_combinations(self):
         """Save used combinations to disk"""
         try:
-            print(f"  💾 Saving {len(self.used_combinations)} combinations...")
+            print(f"\n  💾 === SAVE CALLED ===")
+            print(f"  💾 Combinations to save: {len(self.used_combinations)}")
+            print(f"  💾 Target file: {self.storage_file}")
+            print(f"  💾 File absolute path: {self.storage_file.resolve()}")
             
             self.storage_file.parent.mkdir(parents=True, exist_ok=True)
+            print(f"  💾 Directory ensured: {self.storage_file.parent}")
             
             # Write each combination signature as a line
             with open(self.storage_file, 'w') as f:
+                count = 0
                 for combo_sig in sorted(self.used_combinations):
                     f.write(combo_sig + '\n')
+                    count += 1
+                print(f"  💾 Wrote {count} lines")
             
-            print(f"  ✓ Saved to: {self.storage_file}")
+            print(f"  ✅ SAVE COMPLETED: {self.storage_file}")
+            
+            # Verify
+            if self.storage_file.exists():
+                size = self.storage_file.stat().st_size
+                print(f"  ✅ File verified - Size: {size} bytes")
             
         except Exception as e:
-            print(f"  ⚠️  Could not save: {e}")
+            print(f"  ❌ SAVE FAILED: {e}")
             import traceback
             traceback.print_exc()
     
