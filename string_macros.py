@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.7.0 - Output Folder Tracking
-- CHANGED: Combination history stored IN OUTPUT FOLDER (not .github)
-- File: output/stringed_bundle_XXX/.combination_history.txt
-- Upload this file back to remember combinations across runs!
-- Buffer: 0.37-0.65 seconds between files
+string_macros.py - v3.7.2 - Cumulative History + Counter
+- ADDED: Counter at top of file shows total combinations used
+- CHANGED: Each run ACCUMULATES all previous history (never loses data)
+- FIXED: More robust loading from input_macros folder
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.7.0"
+VERSION = "v3.7.2"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -942,30 +941,37 @@ def scan_for_numbered_subfolders(base_path):
 # OUTPUT FOLDER COMBINATION TRACKER
 # ============================================================================
 
+
 class OutputFolderTracker:
     """
-    Stores combination history IN THE OUTPUT FOLDER.
-    File: output/stringed_bundle_XXX/.combination_history.txt
+    Stores combination history IN THE OUTPUT FOLDER with CUMULATIVE tracking.
+    File: output/stringed_bundle_XXX/COMBINATION_HISTORY.txt (VISIBLE!)
     
     Format:
+    === TOTAL COMBINATIONS: 644 ===
+    
     [Folder Name]
     combo1: F1=file1.json|F2=file2.json|F3=file3.json
     combo2: F1=file2.json|F2=file3.json|F3=file1.json
     ...
     
-    You can upload this file back to remember history across runs!
+    Each run ACCUMULATES all previous history + new combinations!
     """
-    def __init__(self, subfolder_files, rng, folder_name, output_dir):
+    def __init__(self, subfolder_files, rng, folder_name, output_dir, input_dir):
         self.subfolder_files = subfolder_files
         self.rng = rng
         self.folder_name = folder_name
         self.output_dir = output_dir
+        self.input_dir = input_dir
         
-        # History file in output folder
-        self.history_file = output_dir / ".combination_history.txt"
+        # History file in output folder (NO DOT - not hidden!)
+        self.history_file = output_dir / "COMBINATION_HISTORY.txt"
         
-        # Load previous combinations for THIS folder
-        self.used_combinations = self._load_history()
+        # Load ALL previous history (from input_macros)
+        self.all_history = self._load_all_history()
+        
+        # Extract combinations for THIS folder
+        self.used_combinations = self.all_history.get(self.folder_name, set())
         
         # Calculate total possible
         self.total_combinations = 1
@@ -973,56 +979,105 @@ class OutputFolderTracker:
             files = folder_data['files']
             self.total_combinations *= len(files)
         
-        print(f"  📊 {len(self.used_combinations)} combinations already used")
+        print(f"  📊 {len(self.used_combinations)} combinations already used for this folder")
         print(f"  📁 History file: {self.history_file}")
+        
+        # Track new combinations added this run
+        self.new_combinations = []
     
-    def _load_history(self):
-        """Load combination history from file"""
-        used = set()
-        if not self.history_file.exists():
-            return used
+    def _load_all_history(self):
+        """
+        Load ALL history from input_macros file.
+        Returns dict: {folder_name: set(combinations)}
+        This preserves history for ALL folders, not just current one!
+        """
+        all_history = {}
+        
+        # Check input_macros first (uploaded history from previous run)
+        input_history = self.input_dir / "COMBINATION_HISTORY.txt"
+        
+        if not input_history.exists():
+            print(f"  📝 No previous history found (starting fresh)")
+            return all_history
+        
+        print(f"  📥 Loading history from input_macros...")
         
         try:
-            with open(self.history_file, 'r') as f:
+            with open(input_history, 'r') as f:
                 current_folder = None
+                total_count = 0
+                
                 for line in f:
                     line = line.strip()
+                    
+                    # Skip empty lines
                     if not line:
+                        continue
+                    
+                    # Check for counter line
+                    if line.startswith('=== TOTAL COMBINATIONS:'):
+                        # Extract count
+                        parts = line.split(':')
+                        if len(parts) == 2:
+                            try:
+                                total_count = int(parts[1].split('=')[0].strip())
+                            except:
+                                pass
                         continue
                     
                     # Check if it's a folder header
                     if line.startswith('[') and line.endswith(']'):
                         current_folder = line[1:-1]
+                        if current_folder not in all_history:
+                            all_history[current_folder] = set()
                         continue
                     
-                    # Check if it's a combo for our folder
-                    if current_folder == self.folder_name:
-                        if line.startswith('combo'):
-                            # Extract combo signature
-                            parts = line.split(': ', 1)
-                            if len(parts) == 2:
-                                used.add(parts[1])
+                    # Check if it's a combo line
+                    if current_folder and line.startswith('combo'):
+                        # Extract combo signature
+                        parts = line.split(': ', 1)
+                        if len(parts) == 2:
+                            all_history[current_folder].add(parts[1])
             
-            print(f"  ✅ Loaded {len(used)} previous combinations")
+            # Count total combinations across all folders
+            total_loaded = sum(len(combos) for combos in all_history.values())
+            print(f"  ✅ Loaded {total_loaded} total combinations across {len(all_history)} folders")
+            
         except Exception as e:
             print(f"  ⚠️  Could not load history: {e}")
         
-        return used
+        return all_history
     
-    def _save_history(self, new_combo_sig):
-        """Append new combination to history file"""
+    def _save_all_history(self):
+        """
+        Save COMPLETE history for ALL folders to output file.
+        This ensures nothing is ever lost!
+        """
         try:
-            # Append mode - adds to existing file
-            with open(self.history_file, 'a') as f:
-                # Add folder header if this is first combo for this folder
-                if len(self.used_combinations) == 1:  # Just added first one
-                    f.write(f"\n[{self.folder_name}]\n")
-                
-                # Write combination
-                combo_num = len(self.used_combinations)
-                f.write(f"combo{combo_num}: {new_combo_sig}\n")
+            # Calculate total combinations across ALL folders
+            total_count = sum(len(combos) for combos in self.all_history.values())
             
-            print(f"  ✅ Saved combination #{len(self.used_combinations)}")
+            with open(self.history_file, 'w') as f:
+                # Write counter at top
+                f.write(f"=== TOTAL COMBINATIONS: {total_count} ===\n\n")
+                
+                # Write all folders in alphabetical order
+                for folder_name in sorted(self.all_history.keys()):
+                    combos = self.all_history[folder_name]
+                    
+                    # Write folder header
+                    f.write(f"[{folder_name}]\n")
+                    
+                    # Write all combinations for this folder
+                    for i, combo_sig in enumerate(sorted(combos), 1):
+                        f.write(f"combo{i}: {combo_sig}\n")
+                    
+                    f.write("\n")  # Blank line between folders
+            
+            # Only print on last save (reduces console spam)
+            if len(self.new_combinations) % 12 == 0 or len(self.new_combinations) == 1:
+                print(f"  💾 Saved {len(self.new_combinations)} new combinations (Total: {total_count})")
+            
         except Exception as e:
             print(f"  ⚠️  Could not save: {e}")
     
@@ -1053,13 +1108,25 @@ class OutputFolderTracker:
             if not combination:
                 continue
             
-            # Create signature
+            # Create signature for this combination
             signature = "|".join(f"F{fn}={f.name}" for fn, f in combination)
             
             # Check if unused
             if signature not in self.used_combinations:
+                # Add to current folder's set
                 self.used_combinations.add(signature)
-                self._save_history(signature)
+                
+                # Add to overall history dict
+                if self.folder_name not in self.all_history:
+                    self.all_history[self.folder_name] = set()
+                self.all_history[self.folder_name].add(signature)
+                
+                # Track new combination
+                self.new_combinations.append(signature)
+                
+                # Save complete history after each new combination
+                self._save_all_history()
+                
                 return combination
         
         # All used or max attempts reached - return random one
@@ -1075,7 +1142,6 @@ class OutputFolderTracker:
                 combination.append((folder_num, self.rng.choice(files)))
         
         return combination if combination else None
-
 
 
 # ============================================================================
@@ -1239,7 +1305,7 @@ def main():
         
         # Use output folder tracker (saves in output bundle!)
         tracker = OutputFolderTracker(
-            subfolder_files, rng, cleaned_folder_name, bundle_dir
+            subfolder_files, rng, cleaned_folder_name, bundle_dir, search_base
         )
         target_ms = args.target_minutes * 60000
         
