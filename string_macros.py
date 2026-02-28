@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.7.2 - Cumulative History + Counter
-- ADDED: Counter at top of file shows total combinations used
-- CHANGED: Each run ACCUMULATES all previous history (never loses data)
-- FIXED: More robust loading from input_macros folder
+string_macros.py - v3.7.3 - Filename Counter + Cumulative Fix
+- ADDED: Filename counter like merge_macros (COMBINATION_HISTORY_1.txt, _2.txt, etc)
+- FIXED: More obvious cumulative tracking (always use LATEST file!)
+- Counter shows total combinations at top of file
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.7.2"
+VERSION = "v3.7.3"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -957,15 +957,16 @@ class OutputFolderTracker:
     
     Each run ACCUMULATES all previous history + new combinations!
     """
-    def __init__(self, subfolder_files, rng, folder_name, output_dir, input_dir):
+    def __init__(self, subfolder_files, rng, folder_name, output_dir, input_dir, bundle_id):
         self.subfolder_files = subfolder_files
         self.rng = rng
         self.folder_name = folder_name
         self.output_dir = output_dir
         self.input_dir = input_dir
+        self.bundle_id = bundle_id
         
-        # History file in output folder (NO DOT - not hidden!)
-        self.history_file = output_dir / "COMBINATION_HISTORY.txt"
+        # History file in output folder with NUMBERED filename!
+        self.history_file = output_dir / f"COMBINATION_HISTORY_{bundle_id}.txt"
         
         # Load ALL previous history (from input_macros)
         self.all_history = self._load_all_history()
@@ -987,23 +988,38 @@ class OutputFolderTracker:
     
     def _load_all_history(self):
         """
-        Load ALL history from input_macros file.
+        Load ALL history from input_macros.
+        Looks for COMBINATION_HISTORY_*.txt files and loads the LATEST one!
         Returns dict: {folder_name: set(combinations)}
-        This preserves history for ALL folders, not just current one!
         """
         all_history = {}
         
-        # Check input_macros first (uploaded history from previous run)
-        input_history = self.input_dir / "COMBINATION_HISTORY.txt"
+        # Find all history files in input_macros
+        history_files = list(self.input_dir.glob("COMBINATION_HISTORY*.txt"))
         
-        if not input_history.exists():
+        if not history_files:
             print(f"  📝 No previous history found (starting fresh)")
             return all_history
         
-        print(f"  📥 Loading history from input_macros...")
+        # Sort by bundle number (extract number from filename)
+        def extract_bundle_num(filepath):
+            # COMBINATION_HISTORY_123.txt → 123
+            name = filepath.stem
+            if '_' in name:
+                try:
+                    return int(name.split('_')[-1])
+                except:
+                    return 0
+            return 0
+        
+        history_files.sort(key=extract_bundle_num)
+        latest_file = history_files[-1]  # Get LATEST
+        
+        print(f"  📥 Loading history from: {latest_file.name}")
+        print(f"     ({len(history_files)} history files found, using latest)")
         
         try:
-            with open(input_history, 'r') as f:
+            with open(latest_file, 'r') as f:
                 current_folder = None
                 total_count = 0
                 
@@ -1305,7 +1321,7 @@ def main():
         
         # Use output folder tracker (saves in output bundle!)
         tracker = OutputFolderTracker(
-            subfolder_files, rng, cleaned_folder_name, bundle_dir, search_base
+            subfolder_files, rng, cleaned_folder_name, bundle_dir, search_base, args.bundle_id
         )
         target_ms = args.target_minutes * 60000
         
