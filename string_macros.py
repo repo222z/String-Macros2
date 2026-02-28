@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.3.0 - Major Architecture Update
-- CHANGED: Features now applied AFTER complete folder cycles (not per file)
-- ADDED: "optional" folder support (38% chance to include)
-- FIXED: Manifest shows F#* prefix and cumulative timeline
-- FIXED: Smooth cursor transitions between all files (no teleporting)
-- Complete anti-detection suite with all features
-- Added Inefficient file type with massive pause (4-9 minutes)
-- Added "dont mess with me" folder support (unmodified files)
-- Non-JSON files copied with @ prefix
-- D_ removal from folder names
-- Chat queue ensures unique inserts (no repeats until all used)
+string_macros.py - v3.6.0 - Counter File Tracking
+- CHANGED: Persistent tracking uses COUNTER FILES (like merge_macros)
+- FIXED: Chat inserts now properly show in manifest
+- Buffer: 0.37-0.65 seconds between files
+- Optional folders: 38% chance to include
+- All anti-detection features working
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.5.1"
+VERSION = "v3.6.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -945,31 +940,26 @@ def scan_for_numbered_subfolders(base_path):
     return numbered_folders, dmwm_file_set, non_json_files
 
 # ============================================================================
-# PERSISTENT COMBINATION TRACKER (Remembers Across Runs)
+# SIMPLE COUNTER FILE TRACKER (Like merge_macros!)
 # ============================================================================
 
-class PersistentCombinationTracker:
+class SimpleCombinationTracker:
     """
-    Tracks which file combinations have been used.
-    PERSISTS across runs - saves to disk and loads on startup.
-    Ensures no repeats until ALL combinations exhausted.
-    Handles optional folders (38% chance to include).
-    
-    Storage: .github/string_combinations/{folder_name}.json
+    Simple counter-based tracking like merge_macros.
+    Uses a counter file: .github/string_counters/{folder_name}.txt
+    Just counts how many combinations have been used.
     """
-    def __init__(self, subfolder_files, rng, folder_name, storage_dir):
+    def __init__(self, subfolder_files, rng, folder_name):
         self.subfolder_files = subfolder_files
         self.rng = rng
         self.folder_name = folder_name
         
-        # Sanitize folder name for safe filename (replace unsafe chars)
-        safe_name = folder_name.replace('/', '_').replace('\\', '_').replace(':', '_')
-        self.storage_file = storage_dir / f"{safe_name}.txt"
+        # Counter file location
+        self.counter_file = Path('.github/string_counters') / f"{folder_name}.txt"
+        self.counter_file.parent.mkdir(parents=True, exist_ok=True)
         
-        print(f"  💾 Tracking file: {self.storage_file}")
-        
-        # Load previously used combinations
-        self.used_combinations = self._load_used_combinations()
+        # Load counter
+        self.counter = self._load_counter()
         
         # Calculate total possible combinations
         self.total_combinations = 1
@@ -977,101 +967,58 @@ class PersistentCombinationTracker:
             files = folder_data['files']
             self.total_combinations *= len(files)
         
-        print(f"  📊 Combination Tracker: {len(self.used_combinations):,} / {self.total_combinations:,} used")
+        print(f"  📊 Counter: {self.counter} combinations generated so far")
+        print(f"  💾 Counter file: {self.counter_file.resolve()}")
     
-    def _load_used_combinations(self):
-        """Load previously used combinations from disk"""
-        if self.storage_file.exists():
+    def _load_counter(self):
+        """Load counter from file"""
+        if self.counter_file.exists():
             try:
-                with open(self.storage_file, 'r') as f:
-                    # Each line is a combination signature
-                    lines = f.read().strip().split('\n')
-                    return set(line for line in lines if line)
-            except Exception as e:
-                print(f"  ⚠️  Could not load combinations: {e}")
-                return set()
-        return set()
+                with open(self.counter_file, 'r') as f:
+                    return int(f.read().strip())
+            except:
+                return 0
+        return 0
     
-    def _save_used_combinations(self):
-        """Save used combinations to disk"""
+    def _save_counter(self):
+        """Save counter to file"""
         try:
-            print(f"  💾 Saving {len(self.used_combinations)} combinations...")
-            
-            self.storage_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Write each combination signature as a line
-            with open(self.storage_file, 'w') as f:
-                for combo_sig in sorted(self.used_combinations):
-                    f.write(combo_sig + '\n')
-            
-            print(f"  ✓ Saved to: {self.storage_file}")
-            print(f"  📍 ABSOLUTE PATH: {self.storage_file.resolve()}")
-            
+            with open(self.counter_file, 'w') as f:
+                f.write(str(self.counter))
+            print(f"  ✅ Counter saved: {self.counter}")
         except Exception as e:
-            print(f"  ⚠️  Could not save: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"  ⚠️  Could not save counter: {e}")
     
     def get_next_combination(self):
         """
-        Get next unused combination.
-        Handles optional folders with 38% inclusion rate.
-        Returns: List of (folder_num, file_path) tuples in order.
+        Get next random combination.
+        Just picks randomly - no tracking of which specific ones used.
+        Simple and reliable!
         """
-        if len(self.used_combinations) >= self.total_combinations:
-            # All combinations used - reset
-            print(f"  🔄 All {self.total_combinations:,} combinations used! Resetting...")
-            self.used_combinations.clear()
-            self._save_used_combinations()
-        
-        # Try to find unused combination
-        max_attempts = min(self.total_combinations * 2, 2000)
-        for _ in range(max_attempts):
-            # Pick one random file from each subfolder
-            combination = []
-            for folder_num in sorted(self.subfolder_files.keys()):
-                folder_data = self.subfolder_files[folder_num]
-                
-                # Check if optional folder
-                if folder_data.get('is_optional', False):
-                    # 38% chance to include
-                    if self.rng.random() >= 0.38:
-                        continue  # Skip this folder
-                
-                # Pick random file from this folder
-                files = folder_data['files']
-                if files:
-                    chosen_file = self.rng.choice(files)
-                    combination.append((folder_num, chosen_file))
-            
-            # Must have at least one file
-            if not combination:
-                continue
-            
-            # Create signature for this combination (simple string)
-            signature = "|".join(f"{fn}:{f.name}" for fn, f in combination)
-            
-            if signature not in self.used_combinations:
-                self.used_combinations.add(signature)
-                self._save_used_combinations()  # Save immediately
-                return combination
-        
-        # Fallback: return any combination
+        # Pick one random file from each subfolder
         combination = []
         for folder_num in sorted(self.subfolder_files.keys()):
             folder_data = self.subfolder_files[folder_num]
             
-            # Optional check
+            # Check if optional folder
             if folder_data.get('is_optional', False):
+                # 38% chance to include
                 if self.rng.random() >= 0.38:
-                    continue
+                    continue  # Skip this folder
             
+            # Pick random file from this folder
             files = folder_data['files']
             if files:
                 chosen_file = self.rng.choice(files)
                 combination.append((folder_num, chosen_file))
         
-        return combination if combination else None
+        if combination:
+            self.counter += 1
+            self._save_counter()
+            return combination
+        
+        return None
+
 
 # ============================================================================
 # MAIN FUNCTION
@@ -1232,14 +1179,9 @@ def main():
             print("  ⚠️  No numbered subfolders to process")
             continue
         
-        # Create storage directory for persistent tracking (absolute path)
-        storage_dir = Path('.github/string_combinations').resolve()
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        print(f"  📂 Storage directory: {storage_dir}")
-        
-        # Use persistent tracker (remembers across runs)
-        tracker = PersistentCombinationTracker(
-            subfolder_files, rng, cleaned_folder_name, storage_dir
+        # Use simple counter tracker (like merge_macros!)
+        tracker = SimpleCombinationTracker(
+            subfolder_files, rng, cleaned_folder_name
         )
         target_ms = args.target_minutes * 60000
         
