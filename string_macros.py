@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.7.3 - Filename Counter + Cumulative Fix
-- ADDED: Filename counter like merge_macros (COMBINATION_HISTORY_1.txt, _2.txt, etc)
-- FIXED: More obvious cumulative tracking (always use LATEST file!)
-- Counter shows total combinations at top of file
+string_macros.py - v3.7.4 - Click Fix + Auto-Save History
+- FIXED: Click events converted to LeftDown+LeftUp pairs (prevents clamp)
+- FIXED: Events sorted by Time after all modifications (prevents time gaps)
+- ADDED: History auto-saves to input_macros after each run (optional)
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.7.3"
+VERSION = "v3.7.4"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -49,6 +49,49 @@ def filter_problematic_keys(events: list) -> list:
         filtered.append(event)
     
     return filtered
+
+def fix_click_events(events: list) -> list:
+    """
+    Convert 'Click' events to LeftDown+LeftUp pairs.
+    This prevents the mouse from clamping down and dragging.
+    
+    CRITICAL FIX from merge_macros.py!
+    """
+    fixed = []
+    for event in events:
+        if event.get('Type') == 'Click':
+            # Replace Click with LeftDown + LeftUp pair
+            time = event.get('Time', 0)
+            x = event.get('X')
+            y = event.get('Y')
+            
+            # LeftDown at same time
+            left_down = {
+                'Type': 'LeftDown',
+                'Time': time,
+            }
+            if x is not None:
+                left_down['X'] = x
+            if y is not None:
+                left_down['Y'] = y
+            
+            # LeftUp 10-20ms later (small random delay)
+            left_up = {
+                'Type': 'LeftUp',
+                'Time': time + random.randint(10, 20),
+            }
+            if x is not None:
+                left_up['X'] = x
+            if y is not None:
+                left_up['Y'] = y
+            
+            fixed.append(left_down)
+            fixed.append(left_up)
+        else:
+            # Keep all other events as-is
+            fixed.append(event)
+    
+    return fixed
 
 def generate_human_path(start_x, start_y, end_x, end_y, duration_ms, rng):
     """
@@ -1486,6 +1529,12 @@ def main():
             v_code = f"{folder_number}_{v_letter}"
             fname = f"{prefix}{v_code}_{total_min}m{total_sec}s.json"
             
+            # CRITICAL FIXES before saving:
+            # 1. Convert Click events to LeftDown+LeftUp pairs (prevents clamp)
+            # 2. Sort all events by Time (prevents out-of-order gaps)
+            stringed_events = fix_click_events(stringed_events)
+            stringed_events = sorted(stringed_events, key=lambda e: e.get('Time', 0))
+            
             # Save file
             (out_folder / fname).write_text(json.dumps(stringed_events, indent=2))
             
@@ -1561,6 +1610,21 @@ def main():
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
     print(f"📦 Output: {bundle_dir}")
     print("="*70)
+    
+    # Auto-copy history file to input_macros for next run
+    history_file = bundle_dir / f"COMBINATION_HISTORY_{args.bundle_id}.txt"
+    if history_file.exists():
+        input_history_dest = search_base / f"COMBINATION_HISTORY_{args.bundle_id}.txt"
+        try:
+            shutil.copy2(history_file, input_history_dest)
+            print(f"\n📥 Auto-copied history to input_macros:")
+            print(f"   {input_history_dest.name}")
+            print(f"   (Ready for next run!)")
+        except Exception as e:
+            print(f"\n⚠️  Could not auto-copy history: {e}")
+            print(f"   Manual copy: cp {history_file} {search_base}/")
+    
+    print()
 
 if __name__ == "__main__":
     main()
