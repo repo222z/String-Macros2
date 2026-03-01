@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.8.0 - Pre-File Pause Fix + Simple History
-- CHANGED: 1-2 second pause BEFORE each file (replaces inter-file gap)
-- CHANGED: Simple persistent history like bundle counter (one file, always updates)
-- FIXED: Pause happens BEFORE cursor transition (prevents drag after click)
+string_macros.py - v3.8.1 - No Movement Before Clicks!
+- FIXED: No idle movements within 3 seconds before ANY click
+- REMOVED: Jitter completely disabled (testing if it causes issues)
+- Prevents cursor movement interfering with clicks
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.8.0"
+VERSION = "v3.8.1"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -438,6 +438,25 @@ def insert_idle_mouse_movements(events, rng, movement_percentage):
                 # Skip if in drag sequence
                 if is_in_drag_sequence(events, i):
                     continue
+                
+                # CRITICAL: Check if there's a click within 3 seconds AFTER this gap
+                # This prevents idle movements from interfering with clicks!
+                click_too_close = False
+                check_window = 3000  # 3 seconds in ms
+                
+                for j in range(i + 1, len(events)):
+                    event_time = events[j].get("Time", 0)
+                    if event_time > next_time + check_window:
+                        break  # Past the 3-second window
+                    
+                    event_type = events[j].get("Type", "")
+                    if event_type in ("Click", "LeftDown", "LeftUp", "RightDown", "RightUp"):
+                        # Found a click within 3 seconds - skip idle movements!
+                        click_too_close = True
+                        break
+                
+                if click_too_close:
+                    continue  # Skip idle movements for this gap
                 
                 # Calculate active window
                 active_duration = int(gap * movement_percentage)
@@ -895,11 +914,12 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm):
         # Cycle contains dmwm file - no modifications
         return cycle_events, stats
     
-    # Step 1: Jitter to entire cycle
-    events_with_jitter, jitter_count, move_count, jitter_pct = add_pre_click_jitter(cycle_events, rng)
-    stats['jitter_count'] = jitter_count
-    stats['total_moves'] = move_count
-    stats['jitter_percentage'] = jitter_pct
+    # Step 1: JITTER DISABLED (testing if it causes issues)
+    # events_with_jitter, jitter_count, move_count, jitter_pct = add_pre_click_jitter(cycle_events, rng)
+    events_with_jitter = cycle_events  # Skip jitter
+    stats['jitter_count'] = 0
+    stats['total_moves'] = 0
+    stats['jitter_percentage'] = 0
     
     # Step 2: Rapid click detection
     protected_ranges = detect_rapid_click_sequences(events_with_jitter)
@@ -1456,7 +1476,7 @@ def main():
                     f"FILE TYPE: Raw (no time-adding features, no chat)",
                     f"  Between files pause: {format_ms_precise(total_inter)} (x{mult} Multiplier)",
                     f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
-                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
+                    f"Mouse Jitter: DISABLED (testing)",
                     ""
                 ]
             elif is_inef:
@@ -1475,7 +1495,7 @@ def main():
                     f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
                     f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
                     f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
-                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
+                    f"Mouse Jitter: DISABLED (testing)",
                     ""
                 ]
                 if massive_pause_ms > 0:
@@ -1496,7 +1516,7 @@ def main():
                     f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
                     f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
                     f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
-                    f"Mouse Jitter: {int(jitter_pct * 100)}%",
+                    f"Mouse Jitter: DISABLED (testing)",
                     ""
                 ]
             
