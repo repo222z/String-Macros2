@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.8.3 - Bundle-Organized History
-- History in: input_macros/combination_history/COMBINATION_HISTORY.txt
-- Format: [Bundle N - Folder] with all combos per bundle
-- Accumulates ALL previous bundles, deduplicates across ALL history
+string_macros.py - v3.8.4 - Always First/Last + Manual History
+- NEW: Supports "always first" and "always last" files in folders
+- CHANGED: Manual combination history (YOU upload files to combination_history/)
+- Code reads all files, ensures no duplicate combinations
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.8.3"
+VERSION = "v3.8.4"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -783,7 +783,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     Features will be applied to the ENTIRE cycle after.
     
     Args:
-        subfolder_files: Dict of {folder_num: {'files': [...], 'is_optional': bool}}
+        subfolder_files: Dict of {folder_num: {'files': [...], 'is_optional': bool, 
+                                               'always_first': Path, 'always_last': Path}}
         combination: List of (folder_num, file_path) tuples
         rng: Random generator
         dmwm_file_set: Set of unmodified file paths
@@ -793,29 +794,27 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         file_info_list: [(folder_num, filename, is_dmwm, end_time_within_cycle), ...]
         has_dmwm: True if any dmwm file in cycle
     """
-    cycle_events = []
-    file_info_list = []
-    timeline = 0
-    has_dmwm = False
     
-    for folder_num, file_path in combination:
+    def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
+        """Helper to add a file to the cycle"""
+        nonlocal timeline, cycle_events, file_info_list, has_dmwm
+        
         # Load events
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 events = json.load(f)
         except Exception:
-            continue
+            return
         
         if not events:
-            continue
+            return
         
         # Filter problematic keys only
         events = filter_problematic_keys(events)
         if not events:
-            continue
+            return
         
         # Check if dmwm file
-        is_dmwm = file_path in dmwm_file_set
         if is_dmwm:
             has_dmwm = True
         
@@ -887,7 +886,33 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         if cycle_events:
             timeline = cycle_events[-1]['Time']
             # Track file info with its individual end time
-            file_info_list.append((folder_num, file_path.name, is_dmwm, timeline))
+            file_info_list.append((folder_num, file_label, is_dmwm, timeline))
+    
+    # Main cycle building
+    cycle_events = []
+    file_info_list = []
+    timeline = 0
+    has_dmwm = False
+    
+    for folder_num, file_path in combination:
+        # Get folder data
+        folder_data = subfolder_files.get(folder_num, {})
+        
+        # FIRST: Play "always first" if it exists
+        always_first = folder_data.get('always_first')
+        if always_first:
+            is_dmwm = always_first in dmwm_file_set
+            add_file_to_cycle(always_first, folder_num, is_dmwm, f"[ALWAYS FIRST] {always_first.name}")
+        
+        # SECOND: Play the selected file
+        is_dmwm = file_path in dmwm_file_set
+        add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
+        
+        # THIRD: Play "always last" if it exists
+        always_last = folder_data.get('always_last')
+        if always_last:
+            is_dmwm = always_last in dmwm_file_set
+            add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
     
     return cycle_events, file_info_list, has_dmwm
 
@@ -987,15 +1012,33 @@ def scan_for_numbered_subfolders(base_path):
         match = re.search(r'\d+', item.name)
         if match:
             folder_num = int(match.group())
-            json_files = sorted(item.glob("*.json"))
+            all_json_files = sorted(item.glob("*.json"))
+            
+            # Separate "always first", "always last", and regular files
+            always_first = None
+            always_last = None
+            regular_files = []
+            
+            for json_file in all_json_files:
+                filename_lower = json_file.name.lower()
+                if 'always first' in filename_lower or 'alwaysfirst' in filename_lower:
+                    always_first = json_file
+                    print(f"  📌 Found 'always first' in folder {folder_num}: {json_file.name}")
+                elif 'always last' in filename_lower or 'alwayslast' in filename_lower:
+                    always_last = json_file
+                    print(f"  📌 Found 'always last' in folder {folder_num}: {json_file.name}")
+                else:
+                    regular_files.append(json_file)
             
             # Check if folder is "optional" (38% chance to include)
             is_optional = 'optional' in item.name.lower()
             
-            if json_files:
+            if regular_files:  # Must have at least one regular file
                 numbered_folders[folder_num] = {
-                    'files': json_files,
-                    'is_optional': is_optional
+                    'files': regular_files,
+                    'is_optional': is_optional,
+                    'always_first': always_first,
+                    'always_last': always_last
                 }
                 
             # Also collect non-JSON files from numbered folders
@@ -1014,126 +1057,83 @@ def scan_for_numbered_subfolders(base_path):
 # ============================================================================
 
 
-class BundleOrganizedTracker:
+class ManualHistoryTracker:
     """
-    Bundle-organized history with ALL previous bundles preserved!
+    Manual combination history - YOU upload combination files!
     
-    File: input_macros/combination_history/COMBINATION_HISTORY.txt
+    Folder: input_macros/combination_history/
     
-    Format:
-    [Bundle 39 - Folder: 20- Smth]
-    F1=F1 (22).json|F2=F2 (39).json|F3=F3 (1).json
-    F1=F1 (16).json|F2=F2 (28).json|F3=F3 (22).json
+    Code reads ALL .txt files in that folder and ensures no duplicate combinations.
+    You manually dump combination files from each bundle's output to this folder.
     
-    [Bundle 40 - Folder: 20- Smth]
-    F1=F1 (64).json|F2=F2 (36).json|F3=F3 (29).json
+    Files can be named anything, code reads them all:
+    - COMBINATION_HISTORY_39.txt
+    - combos_from_bundle_40.txt
+    - anything.txt
     
-    Each run loads ALL history, generates unique combos, saves ALL bundles!
+    All will be read and combined into one set of used combinations.
     """
-    def __init__(self, subfolder_files, rng, folder_name, bundle_id, input_dir):
+    def __init__(self, subfolder_files, rng, folder_name, input_dir):
         self.subfolder_files = subfolder_files
         self.rng = rng
         self.folder_name = folder_name
-        self.bundle_id = bundle_id
         self.input_dir = input_dir
         
-        # History file in dedicated folder
-        self.history_file = input_dir / "combination_history" / "COMBINATION_HISTORY.txt"
+        # History folder (not a single file!)
+        self.history_dir = input_dir / "combination_history"
         
-        # Load ALL history from ALL bundles
-        self.all_history = self._load_all_history()
+        # Load ALL combinations from ALL files in the folder
+        self.used_combinations = self._load_all_combinations()
         
-        # Get used combinations for THIS folder across ALL bundles
-        self.used_combinations = self._get_used_for_folder()
-        
-        # Track new combinations for this run
-        self.new_combinations = []
-        
-        print(f"  📊 {len(self.used_combinations)} combinations used in previous bundles")
-        print(f"  📁 History file: {self.history_file}")
+        print(f"  📊 {len(self.used_combinations)} combinations loaded from history")
+        print(f"  📁 History folder: {self.history_dir}")
     
-    def _load_all_history(self):
-        """Load ALL bundles from history file"""
-        all_history = {}  # {(bundle_id, folder_name): [combos]}
+    def _load_all_combinations(self):
+        """Read ALL .txt files in history folder and build set of used combos"""
+        all_used = set()
         
-        if not self.history_file.exists():
-            print(f"  📝 No history file found - will create on save")
-            return all_history
+        if not self.history_dir.exists():
+            print(f"  📝 No history folder found (will skip tracking)")
+            return all_used
         
-        try:
-            with open(self.history_file, 'r') as f:
-                current_key = None
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    # Bundle header: [Bundle 39 - Folder: 20- Smth]
-                    if line.startswith('[') and line.endswith(']'):
-                        header = line[1:-1]
-                        # Parse: "Bundle 39 - Folder: 20- Smth"
-                        if ' - Folder: ' in header:
-                            parts = header.split(' - Folder: ')
-                            bundle_part = parts[0].replace('Bundle ', '').strip()
-                            folder_part = parts[1].strip()
-                            current_key = (bundle_part, folder_part)
-                            all_history[current_key] = []
-                    elif current_key:
-                        # Combination line
-                        all_history[current_key].append(line)
-            
-            total_bundles = len(set(k[0] for k in all_history.keys()))
-            total_combos = sum(len(combos) for combos in all_history.values())
-            print(f"  ✅ Loaded {total_bundles} bundles with {total_combos} total combinations")
-            
-        except Exception as e:
-            print(f"  ⚠️  Error reading history: {e}")
+        # Read ALL .txt files
+        txt_files = list(self.history_dir.glob("*.txt"))
+        if not txt_files:
+            print(f"  📝 History folder empty (no .txt files)")
+            return all_used
         
-        return all_history
-    
-    def _get_used_for_folder(self):
-        """Get all combinations used for THIS folder across ALL bundles"""
-        used = set()
-        for (bundle, folder), combos in self.all_history.items():
-            if folder == self.folder_name:
-                used.update(combos)
-        return used
-    
-    def _save_all_history(self):
-        """Save complete history with new bundle added"""
-        try:
-            # Ensure directory exists
-            self.history_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Add current bundle to history
-            current_key = (str(self.bundle_id), self.folder_name)
-            if self.new_combinations:
-                self.all_history[current_key] = self.new_combinations
-            
-            # Write ALL history (all bundles, all folders)
-            with open(self.history_file, 'w') as f:
-                # Sort by bundle number, then folder name
-                sorted_keys = sorted(self.all_history.keys(), 
-                                   key=lambda x: (int(x[0]) if x[0].isdigit() else 999, x[1]))
+        print(f"  📂 Reading {len(txt_files)} history file(s)...")
+        
+        for txt_file in txt_files:
+            try:
+                with open(txt_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        
+                        # Skip empty lines and headers
+                        if not line or line.startswith('[') or line.startswith('='):
+                            continue
+                        
+                        # Check if line is a combination (has F1=, F2=, etc.)
+                        if 'F' in line and '=' in line and '|' in line:
+                            # Extract just the folder name part if it's in [Folder: ...] format
+                            if line.startswith('[') and ']' in line:
+                                continue  # Skip section headers
+                            
+                            # This is a combination line
+                            # Check if it matches current folder
+                            # Format could be: F1=F1 (22).json|F2=F2 (39).json|F3=F3 (1).json
+                            all_used.add(line)
                 
-                for bundle, folder in sorted_keys:
-                    combos = self.all_history[(bundle, folder)]
-                    if combos:  # Only write if has combinations
-                        f.write(f"[Bundle {bundle} - Folder: {folder}]\n")
-                        for combo in combos:
-                            f.write(f"{combo}\n")
-                        f.write("\n")
-            
-            total = sum(len(c) for c in self.all_history.values())
-            print(f"  💾 Saved! Total: {total} combinations across all bundles")
-            
-        except Exception as e:
-            print(f"  ⚠️  Could not save: {e}")
-            import traceback
-            traceback.print_exc()
+                print(f"    ✅ {txt_file.name}: Loaded")
+                
+            except Exception as e:
+                print(f"    ⚠️  {txt_file.name}: Error - {e}")
+        
+        return all_used
     
     def get_next_combination(self):
-        """Get next unused combination (checks ALL previous bundles)"""
+        """Get next unused combination"""
         max_attempts = 500
         
         for _ in range(max_attempts):
@@ -1159,13 +1159,12 @@ class BundleOrganizedTracker:
             # Create signature
             signature = "|".join(f"F{fn}={f.name}" for fn, f in combination)
             
-            # Check if unused (across ALL bundles!)
+            # Check if unused
             if signature not in self.used_combinations:
-                self.used_combinations.add(signature)
-                self.new_combinations.append(signature)
+                self.used_combinations.add(signature)  # Mark as used for this run
                 return combination
         
-        # Fallback: return random
+        # Fallback: return random (may repeat)
         print(f"  ⚠️  Using random combination (may repeat)")
         combination = []
         for folder_num in sorted(self.subfolder_files.keys()):
@@ -1332,8 +1331,8 @@ def main():
             continue
         
         # Use bundle-organized tracker
-        tracker = BundleOrganizedTracker(
-            subfolder_files, rng, cleaned_folder_name, args.bundle_id, search_base
+        tracker = ManualHistoryTracker(
+            subfolder_files, rng, cleaned_folder_name, search_base
         )
         target_ms = args.target_minutes * 60000
         
@@ -1574,14 +1573,14 @@ def main():
         manifest_path = out_folder / f"!_MANIFEST_{folder_number}_!.txt"
         manifest_path.write_text("\n".join(manifest_lines), encoding="utf-8")
         print(f"\n  📋 Manifest written: {manifest_path.name}")
-        
-        # Save history after this folder
-        tracker._save_all_history()
     
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
     print(f"📦 Output: {bundle_dir}")
-    print(f"📝 History: input_macros/combination_history/COMBINATION_HISTORY.txt")
+    print(f"\n💡 To track combinations:")
+    print(f"   1. Upload combination files from this bundle to:")
+    print(f"      input_macros/combination_history/")
+    print(f"   2. Code will read ALL .txt files and avoid duplicates")
     print("="*70 + "\n")
 
 if __name__ == "__main__":
