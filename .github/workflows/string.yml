@@ -3,19 +3,27 @@ name: String macros (with combination file in zip)
 on:
   workflow_dispatch:
     inputs:
+      enable_chat:
+        description: 'Enable chat inserts (50% of files)'
+        required: false
+        default: false
+        type: boolean
+      
+      specific_folder_only:
+        description: 'Process specific folder only (whitelist mode)'
+        required: false
+        default: false
+        type: boolean
+      
       versions:
         description: 'Total versions to generate'
         required: true
         default: '12'
+      
       target_minutes:
         description: 'Target duration per stringed file'
         required: true
         default: '35'
-      enable_chat:
-        description: 'Enable chat inserts'
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: write
@@ -53,8 +61,20 @@ jobs:
           CMD="$CMD --target-minutes ${{ github.event.inputs.target_minutes }}"
           CMD="$CMD --bundle-id ${{ env.BUNDLE_SEQ }}"
           
+          # Chat inserts toggle
           if [ "${{ inputs.enable_chat }}" = "false" ]; then
             CMD="$CMD --no-chat"
+            echo "🔕 Chat inserts DISABLED"
+          else
+            echo "✅ Chat inserts ENABLED (50% of files)"
+          fi
+          
+          # Specific folder toggle
+          if [ "${{ inputs.specific_folder_only }}" = "true" ]; then
+            echo "⚠️ Whitelist not yet implemented for string_macros (will process all folders)"
+            echo "💡 This toggle is reserved for future use"
+          else
+            echo "🌐 Processing ALL folders"
           fi
           
           echo "Running: $CMD"
