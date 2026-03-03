@@ -1455,7 +1455,6 @@ def main():
                 # Track this combination signature
                 combo_signature = "|".join(f"F{fn}={f.name}" for fn, f in combo)
                 folder_combinations_used.append(combo_signature)
-                print(f"  🔍 Tracked combo #{len(folder_combinations_used)}: {combo_signature[:80]}...")
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
                 cycle_events, file_info, has_dmwm = string_cycle(
@@ -1637,48 +1636,29 @@ def main():
         
         # Collect combinations for this folder (for bundle-level file)
         # Use the combinations we tracked during THIS RUN
-        print(f"  🔍 DEBUG: folder_combinations_used has {len(folder_combinations_used)} entries")
         if folder_combinations_used:
             bundle_combinations[cleaned_folder_name] = folder_combinations_used
             print(f"  📊 Tracked {len(folder_combinations_used)} combinations for bundle file")
-        else:
-            print(f"  ⚠️  WARNING: No combinations tracked for {cleaned_folder_name}")
-    
-    # DEBUG: Check what we have
-    print(f"\n🔍 DEBUG: bundle_combinations has {len(bundle_combinations)} folders")
-    for fname, combos in bundle_combinations.items():
-        print(f"  - {fname}: {len(combos)} combinations")
     
     # Write ONE combination file at SAME LEVEL as bundle folder
-    # ALWAYS try to write, even if empty!
-    combo_file = output_root / f"COMBINATION_HISTORY_{args.bundle_id}.txt"
-    print(f"\n🔍 DEBUG: Attempting to write to: {combo_file}")
-    
-    try:
-        with open(combo_file, 'w') as f:
-            f.write(f"=== BUNDLE {args.bundle_id} COMBINATION HISTORY ===\n\n")
-            
-            if bundle_combinations:
+    if bundle_combinations:
+        combo_file = output_root / f"COMBINATION_HISTORY_{args.bundle_id}.txt"
+        try:
+            with open(combo_file, 'w') as f:
+                f.write(f"=== BUNDLE {args.bundle_id} COMBINATION HISTORY ===\n\n")
+                
                 for folder_name in sorted(bundle_combinations.keys()):
                     combos = bundle_combinations[folder_name]
                     f.write(f"[{folder_name}]\n")
                     for combo in combos:
                         f.write(f"{combo}\n")
                     f.write(f"\n")
-                
-                total_combos = sum(len(c) for c in bundle_combinations.values())
-                print(f"✅ Combination file written: {combo_file.name}")
-                print(f"   Total combinations: {total_combos} across {len(bundle_combinations)} folders")
-            else:
-                f.write("(No combinations generated - possible error)\n")
-                print(f"⚠️  Combination file written but EMPTY!")
-        
-        print(f"✅ File exists at: {combo_file}")
-        
-    except Exception as e:
-        print(f"❌ ERROR writing combination file: {e}")
-        import traceback
-        traceback.print_exc()
+            
+            total_combos = sum(len(c) for c in bundle_combinations.values())
+            print(f"\n📝 Combination file written: {combo_file.name}")
+            print(f"   Total combinations: {total_combos} across {len(bundle_combinations)} folders")
+        except Exception as e:
+            print(f"\n⚠️  Could not write combination file: {e}")
     
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
