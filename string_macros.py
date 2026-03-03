@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.8.5 - Output Combination File + Jitter Protection
-- NEW: Creates COMBINATION_HISTORY_{bundle_id}.txt in output for manual upload
-- CHANGED: Jitter-free zones (400-700ms) before/after clicks for accuracy
-- Supports "always first" and "always last" files in folders
-- Manual combination history (YOU upload files to combination_history/)
+string_macros.py - v3.8.4 - Always First/Last + Manual History
+- NEW: Supports "always first" and "always last" files in folders
+- CHANGED: Manual combination history (YOU upload files to combination_history/)
+- Code reads all files, ensures no duplicate combinations
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.8.5"
+VERSION = "v3.8.4"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -290,22 +289,12 @@ def is_in_protected_range(index, protected_ranges):
 def add_pre_click_jitter(events: list, rng: random.Random) -> tuple:
     """
     Add realistic pre-move jitter: before a random 20-45% of ALL mouse movements,
-    add 2-3 micro-movements around the target (±1-3px), then snap to exact position.
-    
-    NEW: Jitter-free protection zones (400-700ms) before/after clicks for accuracy!
-    
+    add 2-3 micro-movements around the target (Â±1-3px), then snap to exact position.
     The percentage is randomly chosen per file (non-rounded).
     Returns (events_with_jitter, jitter_count, total_moves, jitter_percentage).
     """
     if not events or len(events) < 2:
         return events, 0, 0, 0.0
-    
-    # Build list of click times for protection zones
-    click_times = []
-    for event in events:
-        event_type = event.get('Type', '')
-        if event_type in ('Click', 'LeftDown', 'LeftUp', 'RightDown', 'RightUp', 'DragStart'):
-            click_times.append(event.get('Time', 0))
     
     # Randomly choose jitter percentage for this file (20-45%, non-rounded)
     jitter_percentage = rng.uniform(0.20, 0.45)
@@ -321,23 +310,6 @@ def add_pre_click_jitter(events: list, rng: random.Random) -> tuple:
         # Apply to ALL mouse movements (MouseMove, Click, RightDown)
         if event_type in ('MouseMove', 'Click', 'RightDown'):
             total_moves += 1
-            
-            # Check if we're in a jitter-free protection zone (400-700ms before/after clicks)
-            move_time = event.get('Time', 0)
-            protection_zone = int(rng.uniform(400, 700))  # Random 400-700ms
-            
-            # Check if ANY click is within protection zone
-            in_protection_zone = False
-            for click_time in click_times:
-                # Check before and after
-                if abs(move_time - click_time) <= protection_zone:
-                    in_protection_zone = True
-                    break
-            
-            # Skip jitter if in protection zone
-            if in_protection_zone:
-                i += 1
-                continue
             
             # Random chance based on jitter_percentage
             if rng.random() < jitter_percentage:
@@ -1092,7 +1064,7 @@ class ManualHistoryTracker:
     Folder: input_macros/combination_history/
     
     Code reads ALL .txt files in that folder and ensures no duplicate combinations.
-    Code also CREATES a combination file in output for you to manually upload.
+    You manually dump combination files from each bundle's output to this folder.
     
     Files can be named anything, code reads them all:
     - COMBINATION_HISTORY_39.txt
@@ -1112,9 +1084,6 @@ class ManualHistoryTracker:
         
         # Load ALL combinations from ALL files in the folder
         self.used_combinations = self._load_all_combinations()
-        
-        # Track NEW combinations generated this run
-        self.new_combinations = []
         
         print(f"  📊 {len(self.used_combinations)} combinations loaded from history")
         print(f"  📁 History folder: {self.history_dir}")
@@ -1193,7 +1162,6 @@ class ManualHistoryTracker:
             # Check if unused
             if signature not in self.used_combinations:
                 self.used_combinations.add(signature)  # Mark as used for this run
-                self.new_combinations.append(signature)  # Track for output file
                 return combination
         
         # Fallback: return random (may repeat)
@@ -1209,25 +1177,6 @@ class ManualHistoryTracker:
                 combination.append((folder_num, self.rng.choice(files)))
         
         return combination if combination else None
-    
-    def save_to_output(self, output_dir, bundle_id):
-        """Save new combinations to output folder for manual upload"""
-        if not self.new_combinations:
-            return
-        
-        try:
-            # Create combination file with bundle number
-            combo_file = output_dir / f"COMBINATION_HISTORY_{bundle_id}.txt"
-            
-            with open(combo_file, 'w') as f:
-                f.write(f"[Bundle {bundle_id} - Folder: {self.folder_name}]\n")
-                for combo in self.new_combinations:
-                    f.write(f"{combo}\n")
-            
-            print(f"  💾 Saved {len(self.new_combinations)} combinations to: {combo_file.name}")
-            
-        except Exception as e:
-            print(f"  ⚠️  Could not save combinations: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="String Macros v3.1.0")
@@ -1624,9 +1573,6 @@ def main():
         manifest_path = out_folder / f"!_MANIFEST_{folder_number}_!.txt"
         manifest_path.write_text("\n".join(manifest_lines), encoding="utf-8")
         print(f"\n  📋 Manifest written: {manifest_path.name}")
-        
-        # Save combination file to output
-        tracker.save_to_output(out_folder, args.bundle_id)
     
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
