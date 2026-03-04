@@ -10,7 +10,7 @@ string_macros.py - v3.8.5 - Bundle-Level Combination File
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.9.3"
+VERSION = "v3.9.4"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1236,6 +1236,7 @@ def main():
     parser.add_argument("--target-minutes", type=int, default=35)
     parser.add_argument("--bundle-id", type=int, required=True)
     parser.add_argument("--no-chat", action="store_true", help="Disable chat inserts")
+    parser.add_argument("--specific-folders", type=str, help="Path to file with specific folder names to include (one per line)")
     args = parser.parse_args()
     
     print("="*70)
@@ -1318,6 +1319,41 @@ def main():
     if not main_folders:
         print("❌ No folders with numbered subfolders found!")
         return
+    
+    # Filter by specific folders if provided
+    if args.specific_folders:
+        try:
+            with open(args.specific_folders, 'r', encoding='utf-8') as f:
+                # Read folder names, strip whitespace, ignore empty lines
+                specific_names = [line.strip() for line in f if line.strip()]
+            
+            if specific_names:
+                print(f"\n📋 Filtering to specific folders only:")
+                for name in specific_names:
+                    print(f"  - {name}")
+                
+                # Filter main_folders to only include specified folders
+                filtered_folders = []
+                for folder_data in main_folders:
+                    if folder_data['name'] in specific_names:
+                        filtered_folders.append(folder_data)
+                
+                if not filtered_folders:
+                    print(f"\n❌ None of the specified folders were found!")
+                    print(f"   Available folders: {[f['name'] for f in main_folders]}")
+                    return
+                
+                main_folders = filtered_folders
+                print(f"✅ Filtered to {len(main_folders)} folder(s)")
+            else:
+                print(f"\n⚠️  Specific folders file is empty, processing ALL folders")
+        
+        except FileNotFoundError:
+            print(f"\n❌ Specific folders file not found: {args.specific_folders}")
+            return
+        except Exception as e:
+            print(f"\n❌ Error reading specific folders file: {e}")
+            return
     
     print(f"\n📁 Total folders to process: {len(main_folders)}")
     print("="*70)
