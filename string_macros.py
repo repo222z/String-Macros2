@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.8.5 - Bundle-Level Combination File
-- NEW: ONE combination file per bundle at root level (lists ALL folders)
-- NEW: Optional folders: 40-60% random chance (not fixed 38%)
+string_macros.py - v3.9.5 - Manifest Time Tracking Fix
+- FIXED: Manifest now tracks pre-file pauses, post-pause delays, and cursor transitions
+- Manifest times now match actual file times exactly (no more ~1 minute discrepancy)
+- Bundle-level combination file
+- Optional folders: 40-60% random chance
 - "Always first/last" files supported
 - Manual history: YOU upload files to input_macros/combination_history/
 """
@@ -10,7 +12,7 @@ string_macros.py - v3.8.5 - Bundle-Level Combination File
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.9.4"
+VERSION = "v3.9.5"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -836,9 +838,13 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         dmwm_file_set: Set of unmodified file paths
     
     Returns:
-        (cycle_events, file_info_list, has_dmwm)
-        file_info_list: [(folder_num, filename, is_dmwm, end_time_within_cycle), ...]
-        has_dmwm: True if any dmwm file in cycle
+        Dict with keys:
+            'events': cycle_events (list)
+            'file_info': file_info_list [(folder_num, filename, is_dmwm, end_time_within_cycle), ...]
+            'has_dmwm': True if any dmwm file in cycle
+            'pre_pause_total': Total pre-file pause time (ms)
+            'post_pause_total': Total post-pause delay time (ms)
+            'transition_total': Total cursor transition time (ms)
     """
     
     def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
@@ -874,6 +880,9 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
             pre_file_pause = int(rng.uniform(800.0, 1500.0))
             timeline += pre_file_pause
             
+            # NEW: Track this pause
+            total_pre_pause += pre_file_pause
+            
             # NOW do cursor transition (AFTER pause, so click has time to release)
             # Get last position
             last_x, last_y = None, None
@@ -892,6 +901,9 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
             # ADDITIONAL pause after pre-file pause: 0.5-1 second
             post_pause_delay = int(rng.uniform(500.0, 1000.0))
             timeline += post_pause_delay
+            
+            # NEW: Track this delay
+            total_post_pause += post_pause_delay
             
             # Transition duration: 200-400ms (for actual cursor movement)
             transition_duration = int(rng.uniform(200, 400))
@@ -913,6 +925,9 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     })
                 
                 timeline += transition_duration
+                
+                # NEW: Track transition time
+                total_transition_time += transition_duration
                 
                 # Final position to ensure exact placement
                 cycle_events.append({
@@ -940,6 +955,11 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     timeline = 0
     has_dmwm = False
     
+    # NEW: Track pre-file pauses, post-pause delays, and cursor transitions
+    total_pre_pause = 0
+    total_post_pause = 0
+    total_transition_time = 0
+    
     for folder_num, file_path in combination:
         # Get folder data
         folder_data = subfolder_files.get(folder_num, {})
@@ -960,7 +980,14 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
             is_dmwm = always_last in dmwm_file_set
             add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
     
-    return cycle_events, file_info_list, has_dmwm
+    return {
+        'events': cycle_events,
+        'file_info': file_info_list,
+        'has_dmwm': has_dmwm,
+        'pre_pause_total': total_pre_pause,
+        'post_pause_total': total_post_pause,
+        'transition_total': total_transition_time
+    }
 
 
 def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm):
@@ -1483,6 +1510,11 @@ def main():
             massive_pause_ms = 0
             jitter_pct = 0
             
+            # NEW: Track pre-file pauses, post-pause delays, and cursor transitions
+            total_pre_file = 0
+            total_post_pause = 0
+            total_transitions = 0
+            
             while True:
                 combo = tracker.get_next_combination()
                 if not combo:
@@ -1493,9 +1525,13 @@ def main():
                 folder_combinations_used.append(combo_signature)
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
-                cycle_events, file_info, has_dmwm = string_cycle(
+                cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set
                 )
+                
+                cycle_events = cycle_result['events']
+                file_info = cycle_result['file_info']
+                has_dmwm = cycle_result['has_dmwm']
                 
                 if not cycle_events:
                     break
@@ -1567,6 +1603,11 @@ def main():
                 total_idle += stats['idle_movements']
                 jitter_pct = stats['jitter_percentage']
                 
+                # NEW: Accumulate pre-file pause, post-pause, and transition times
+                total_pre_file += cycle_result.get('pre_pause_total', 0)
+                total_post_pause += cycle_result.get('post_pause_total', 0)
+                total_transitions += cycle_result.get('transition_total', 0)
+                
                 if len(all_file_info_with_times) > 150:  # Safety limit
                     break
             
@@ -1636,7 +1677,7 @@ def main():
                     ""
                 ]
             elif is_inef:
-                total_pause = total_intra + total_inter
+                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions
                 original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
                 
@@ -1650,6 +1691,9 @@ def main():
                     f"total before    - Within original files pauses: {format_ms_precise(original_intra)}",
                     f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
                     f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
+                    f"                - Pre-file pauses: {format_ms_precise(total_pre_file)}",
+                    f"                - Post-pause delays: {format_ms_precise(total_post_pause)}",
+                    f"                - Cursor transitions: {format_ms_precise(total_transitions)}",
                     f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
                     f"Mouse Jitter: {int(jitter_pct * 100)}%",
                     ""
@@ -1657,7 +1701,7 @@ def main():
                 if massive_pause_ms > 0:
                     manifest_entry.insert(-2, f"Massive P1: {format_ms_precise(massive_pause_ms)}")
             else:  # normal
-                total_pause = total_intra + total_inter
+                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions
                 original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
                 
@@ -1671,6 +1715,9 @@ def main():
                     f"total before    - Within original files pauses: {format_ms_precise(original_intra)}",
                     f"multiplier      - Between original files pauses: {format_ms_precise(original_inter)}",
                     f"                - Normal file pause: {format_ms_precise(total_normal_pauses)}",
+                    f"                - Pre-file pauses: {format_ms_precise(total_pre_file)}",
+                    f"                - Post-pause delays: {format_ms_precise(total_post_pause)}",
+                    f"                - Cursor transitions: {format_ms_precise(total_transitions)}",
                     f"Idle Mouse Movements: {format_ms_precise(total_idle)}",
                     f"Mouse Jitter: {int(jitter_pct * 100)}%",
                     ""
