@@ -138,12 +138,13 @@ jobs:
       - name: Add combination file to output
         run: |
           BUNDLE_DIR="output/stringed_bundle_${{ env.BUNDLE_SEQ }}"
-          COMBO_FILE="COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt"
+          COMBO_FILE="output/COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt"
           
           if [ -f "$COMBO_FILE" ]; then
             cp "$COMBO_FILE" "$BUNDLE_DIR/" 2>/dev/null || echo "Could not copy combination file"
+            echo "✓ Copied combination file to bundle"
           else
-            echo "No combination file found at $COMBO_FILE"
+            echo "⚠️ No combination file found at $COMBO_FILE"
           fi
             
       - name: Create ZIP artifact
