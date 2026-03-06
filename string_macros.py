@@ -849,7 +849,7 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     
     def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
         """Helper to add a file to the cycle"""
-        nonlocal timeline, cycle_events, file_info_list, has_dmwm
+        nonlocal timeline, cycle_events, file_info_list, has_dmwm, total_pre_pause, total_post_pause, total_transition_time
         
         # Load events
         try:
