@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.9.5 - Manifest Time Tracking Fix
-- FIXED: Manifest now tracks pre-file pauses, post-pause delays, and cursor transitions
-- Manifest times now match actual file times exactly (no more ~1 minute discrepancy)
+string_macros.py - v3.10.0 - End Folder Tags
+- NEW: "end" tag - Folder becomes definitive end point (e.g., "4 end- logout")
+- NEW: "optional/end" tag - Optional folder that ends loop if chosen
+- FIXED: Manifest time tracking (pre-pause, post-pause, transitions)
 - Bundle-level combination file
-- Optional folders: 40-60% random chance
+- Optional folders: 27-43% random chance
 - "Always first/last" files supported
-- Manual history: YOU upload files to input_macros/combination_history/
+- Manual history: Upload files to input_macros/combination_history/
 """
 
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.9.5"
+VERSION = "v3.10.0"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1107,11 +1108,19 @@ def scan_for_numbered_subfolders(base_path):
             is_optional = 'optional' in item.name.lower()
             optional_chance = random.uniform(0.27, 0.43) if is_optional else None
             
+            # Check if folder is "end" (becomes definitive end point)
+            is_end = 'end' in item.name.lower()
+            
+            # "optional/end" combo: optional folder that ends loop if chosen
+            is_optional_end = is_optional and is_end
+            
             if regular_files:  # Must have at least one regular file
                 numbered_folders[folder_num] = {
                     'files': regular_files,
                     'is_optional': is_optional,
                     'optional_chance': optional_chance,
+                    'is_end': is_end,
+                    'is_optional_end': is_optional_end,
                     'always_first': always_first,
                     'always_last': always_last
                 }
@@ -1208,7 +1217,7 @@ class ManualHistoryTracker:
         return all_used
     
     def get_next_combination(self):
-        """Get next unused combination"""
+        """Get next unused combination (with end folder support)"""
         max_attempts = 500
         
         for _ in range(max_attempts):
@@ -1217,13 +1226,36 @@ class ManualHistoryTracker:
             for folder_num in sorted(self.subfolder_files.keys()):
                 folder_data = self.subfolder_files[folder_num]
                 
-                # Optional folder check (uses random 40-60% chance stored per folder)
+                # Check for "optional/end" combo (optional folder that ends loop if chosen)
+                if folder_data.get('is_optional_end', False):
+                    optional_chance = folder_data.get('optional_chance', 0.50)
+                    if self.rng.random() < optional_chance:
+                        # Optional/end folder was chosen - include it and STOP
+                        files = folder_data['files']
+                        if files:
+                            chosen_file = self.rng.choice(files)
+                            combination.append((folder_num, chosen_file))
+                        break  # End the loop here
+                    else:
+                        # Optional/end folder was skipped - continue to next folders
+                        continue
+                
+                # Check for regular "end" folder (always included, always ends loop)
+                if folder_data.get('is_end', False) and not folder_data.get('is_optional', False):
+                    # End folder - include it and STOP
+                    files = folder_data['files']
+                    if files:
+                        chosen_file = self.rng.choice(files)
+                        combination.append((folder_num, chosen_file))
+                    break  # End the loop here
+                
+                # Regular optional folder check (uses random 27-43% chance stored per folder)
                 if folder_data.get('is_optional', False):
                     optional_chance = folder_data.get('optional_chance', 0.50)
                     if self.rng.random() >= optional_chance:
                         continue
                 
-                # Pick random file
+                # Pick random file from this folder
                 files = folder_data['files']
                 if files:
                     chosen_file = self.rng.choice(files)
@@ -1245,10 +1277,31 @@ class ManualHistoryTracker:
         combination = []
         for folder_num in sorted(self.subfolder_files.keys()):
             folder_data = self.subfolder_files[folder_num]
+            
+            # Handle optional/end
+            if folder_data.get('is_optional_end', False):
+                optional_chance = folder_data.get('optional_chance', 0.50)
+                if self.rng.random() < optional_chance:
+                    files = folder_data['files']
+                    if files:
+                        combination.append((folder_num, self.rng.choice(files)))
+                    break
+                else:
+                    continue
+            
+            # Handle regular end
+            if folder_data.get('is_end', False) and not folder_data.get('is_optional', False):
+                files = folder_data['files']
+                if files:
+                    combination.append((folder_num, self.rng.choice(files)))
+                break
+            
+            # Handle regular optional
             if folder_data.get('is_optional', False):
                 optional_chance = folder_data.get('optional_chance', 0.50)
                 if self.rng.random() >= optional_chance:
                     continue
+            
             files = folder_data['files']
             if files:
                 combination.append((folder_num, self.rng.choice(files)))
@@ -1338,6 +1391,21 @@ def main():
             if numbered_subfolders:
                 nums = sorted([k for k in numbered_subfolders.keys() if k != 0])
                 print(f"  Subfolders: {nums}")
+                
+                # Show special folder types
+                special_folders = []
+                for num in nums:
+                    if num in numbered_subfolders:
+                        folder_info = numbered_subfolders[num]
+                        if folder_info.get('is_optional_end'):
+                            special_folders.append(f"{num} (optional/end)")
+                        elif folder_info.get('is_end'):
+                            special_folders.append(f"{num} (end)")
+                        elif folder_info.get('is_optional'):
+                            special_folders.append(f"{num} (optional)")
+                
+                if special_folders:
+                    print(f"  Special: {', '.join(special_folders)}")
             if dmwm_file_set:
                 print(f"  Unmodified: {len(dmwm_file_set)} files (added to pool)")
             if non_json_files:
