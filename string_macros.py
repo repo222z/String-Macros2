@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.10.1 - Complete Manifest Time Fix
-- FIXED: Raw files now show all pause types in manifest (was missing ~10s)
+string_macros.py - v3.11.0 - Decimal Folders + Feature Documentation
+- NEW: Decimal folder support (e.g., 3.5 goes between 3 and 4)
+- NEW: Comprehensive feature documentation in code
+- FIXED: Raw files now show all pause types in manifest
 - FIXED: Inefficient files now include massive pause in total
 - NEW: "end" tag - Folder becomes definitive end point
 - NEW: "optional/end" tag - Optional folder that ends loop if chosen
@@ -15,7 +17,235 @@ string_macros.py - v3.10.1 - Complete Manifest Time Fix
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.10.1"
+VERSION = "v3.11.0"
+
+# ============================================================================
+# FEATURE DOCUMENTATION
+# ============================================================================
+"""
+═══════════════════════════════════════════════════════════════════════════
+                    🎯 PAUSE FEATURES (ANTI-DETECTION)
+═══════════════════════════════════════════════════════════════════════════
+
+1. INTER-CYCLE PAUSES
+   Status: ✅ ACTIVE (Always)
+   What: Pause between complete folder cycles (F1→F2→F3→F4 → pause → F1...)
+   Duration: 500-5000ms × multiplier
+   Purpose: Natural break between action sequences
+   Code: Line ~1620 (inter_cycle_pause)
+
+2. INTRA-FILE PAUSES
+   Status: ✅ ACTIVE (Inefficient & Normal files only)
+   What: Pauses already inside original JSON files
+   Duration: From original recordings (typically 2-3 min)
+   Purpose: Preserves natural hesitations from recording
+   Code: Line ~850 (filter pauses in raw files)
+
+3. PRE-FILE PAUSES
+   Status: ✅ ACTIVE (Always)
+   What: Pause BEFORE each file plays
+   Duration: 800-1500ms × multiplier
+   Purpose: Click release protection (prevents drag bugs)
+   Code: Line ~877-885 (pre_file_pause)
+   Total: ~2m 10s per output file
+
+4. POST-PAUSE DELAYS
+   Status: ✅ ACTIVE (Always)
+   What: Delay AFTER pre-pause, before cursor moves
+   Duration: 500-1000ms × multiplier
+   Purpose: Preparation time, more realistic
+   Code: Line ~888-895 (post_pause_delay)
+   Total: ~1m 25s per output file
+
+5. CURSOR TRANSITIONS
+   Status: ✅ ACTIVE (Always)
+   What: Fast realistic mouse movement between file positions
+   Duration: 200-400ms per transition
+   Purpose: Natural cursor movement with Bézier curves
+   Code: Line ~898-923 (4-phase cursor transition)
+   Total: ~33s per output file
+
+6. MASSIVE PAUSE (Inefficient Only)
+   Status: ✅ ACTIVE (Inefficient files only)
+   What: One extremely long pause (60-120 seconds)
+   Where: Random midpoint in file
+   Purpose: Simulates distracted/inefficient behavior
+   Code: Line ~394-449 (insert_massive_pause)
+
+═══════════════════════════════════════════════════════════════════════════
+              🛡️ ANTI-DETECTION FEATURES (ANTI-BAN)
+═══════════════════════════════════════════════════════════════════════════
+
+1. MOUSE JITTER
+   Status: ✅ ACTIVE (Always)
+   What: Random small offsets to cursor positions
+   Percentage: 21-32% of all mouse movements
+   Amount: Small random offset per movement
+   Purpose: Simulates natural hand tremor
+   Code: Line ~669-677 (apply_smart_jitter)
+
+2. SMART JITTER EXCLUSION ZONES
+   Status: ✅ ACTIVE (Always)
+   What: NO jitter near clicks (protects accuracy)
+   Zones: 1000ms before/after any click
+   Extended: 1500ms for rapid click sequences
+   Purpose: Maintains click accuracy while adding realism
+   Code: Line ~552-589 (detect_rapid_click_sequences)
+
+3. RAPID CLICK SEQUENCE PROTECTION
+   Status: ✅ ACTIVE (Always)
+   What: Detects and protects rapid click patterns
+   Detection: 3+ clicks within 1500ms
+   Protection: Extended 1500ms exclusion zones (vs 1000ms normal)
+   Purpose: Prevents jitter from breaking rapid actions
+   Code: Line ~552-589 (detect_rapid_click_sequences)
+
+4. IDLE MOUSE MOVEMENTS
+   Status: ✅ ACTIVE (Always)
+   What: Small random mouse wiggles during long pauses
+   When: During any pause > 1 second
+   Pattern: Smooth Bézier curves, realistic speed
+   Purpose: Looks human during waiting periods
+   Code: Line ~702-793 (add_idle_movements)
+   Total: ~10 minutes per output file
+
+5. DRAG OPERATION PROTECTION
+   Status: ✅ ACTIVE (Always)
+   What: Never jitters during drag operations
+   Detection: Hold + Move + Release patterns
+   Purpose: Maintains drag accuracy
+   Code: Line ~596-628 (detect_drag_operations)
+
+6. RANDOMIZED FILE SELECTION
+   Status: ✅ ACTIVE (Always)
+   What: Files selected randomly from each folder
+   Method: Random choice per folder per cycle
+   Purpose: No predictable file patterns
+   Code: Line ~1228 (rng.choice)
+
+7. COMBINATION HISTORY TRACKING
+   Status: ✅ ACTIVE (Always)
+   What: Never repeats same folder combination
+   Tracks: Which files used from each folder together
+   File: COMBINATION_HISTORY_XX.txt
+   Purpose: Maximum variety across runs
+   Code: Line ~1135-1256 (ManualHistoryTracker)
+
+8. VARIABLE MULTIPLIERS
+   Status: ✅ ACTIVE (Always)
+   What: Different speed multipliers per file type
+   Raw: x1, x2, x3
+   Inefficient: x2, x3
+   Normal: x1, x2
+   Purpose: Varied timing patterns
+   Code: Line ~1565-1582 (multiplier selection)
+
+9. OPTIONAL FOLDERS (27-43% CHANCE)
+   Status: ✅ ACTIVE (If "optional" in folder name)
+   What: Folder has random chance to be included
+   Chance: 27-43% (randomized per bundle)
+   Tag: "optional" anywhere in folder name
+   Purpose: Unpredictable action patterns
+   Code: Line ~1107-1114 (is_optional detection)
+
+10. "END" FOLDER TAGS
+    Status: ✅ ACTIVE (If "end" in folder name)
+    What: Folder becomes definitive loop endpoint
+    Tag: "end" anywhere in folder name
+    Example: "4 end- logout" stops loop at folder 4
+    Purpose: Controlled endpoint timing
+    Code: Line ~1110-1117 (is_end detection)
+
+11. "OPTIONAL/END" COMBO
+    Status: ✅ ACTIVE (If both "optional" and "end" in name)
+    What: Optional folder that ends loop if chosen
+    Chance: 27-43% to include and end loop
+    Purpose: Sometimes end early, sometimes continue
+    Code: Line ~1221-1225 (is_optional_end handling)
+
+12. ALWAYS FIRST/LAST FILES
+    Status: ✅ ACTIVE (If tagged in filename)
+    What: Specific files always play first/last in folder
+    Tags: "always first" or "always last" in filename
+    Purpose: Guaranteed sequence control
+    Code: Line ~1096-1103 (always_first/always_last detection)
+
+═══════════════════════════════════════════════════════════════════════════
+                    📂 FOLDER ORGANIZATION FEATURES
+═══════════════════════════════════════════════════════════════════════════
+
+1. NUMBERED FOLDERS (DECIMAL SUPPORT)
+   Status: ✅ ACTIVE (Always)
+   What: Folders numbered in sequence (supports decimals!)
+   Format: "1/", "2/", "3/", "3.5/", "4/"
+   Decimal: 3.5 goes after 3 and before 4
+   Purpose: Sequential action steps with insertion capability
+   Code: Line ~1084-1088 (folder number extraction - UPDATED v3.11.0)
+
+2. FOLDER LOOP STRUCTURE
+   Status: ✅ ACTIVE (Always)
+   What: Cycles through folders sequentially
+   Pattern: F1→F2→F3→F4→F1→F2→F3→F4...
+   Purpose: Maintains action sequences
+   Code: Line ~1217-1230 (folder iteration)
+
+3. SUBFOLDER FILTERING
+   Status: ✅ ACTIVE (If --specific-folders used)
+   What: Process only specified folders
+   Method: Upload list to input_macros/combination_history/
+   Purpose: Run subset of folders
+   Code: Line ~1402-1427 (specific_folders filtering)
+
+═══════════════════════════════════════════════════════════════════════════
+                    📝 OUTPUT & TRACKING FEATURES
+═══════════════════════════════════════════════════════════════════════════
+
+1. COMPREHENSIVE MANIFEST
+   Status: ✅ ACTIVE (Always)
+   What: Detailed breakdown of ALL pause types
+   Shows: Between cycles, pre-file, post-pause, cursor, intra, massive
+   Purpose: Complete transparency and verification
+   Code: Line ~1730-1800 (manifest generation)
+
+2. COMBINATION FILE EXPORT
+   Status: ✅ ACTIVE (Always)
+   What: Saves all folder combinations used
+   Format: F1=file01.json|F2=file05.json|F3=file12.json
+   File: COMBINATION_HISTORY_XX.txt
+   Purpose: Track history for future runs
+   Code: Line ~1806-1825 (combination file creation)
+
+3. ALPHABETICAL FILE NAMING
+   Status: ✅ ACTIVE (Always)
+   What: Organized naming by file type
+   Raw: ^XX_A, ^XX_B, ^XX_C
+   Inefficient: ¬¬XX_D, ¬¬XX_E, ¬¬XX_F
+   Normal: XX_G through XX_L
+   Purpose: Easy file type identification
+   Code: Line ~1686-1725 (filename generation)
+
+═══════════════════════════════════════════════════════════════════════════
+                    🎛️ OPTIONAL FEATURES (USER CONTROLLED)
+═══════════════════════════════════════════════════════════════════════════
+
+1. CHAT INSERTS
+   Status: ⚙️ OPTIONAL (--no-chat to disable)
+   What: Random chat messages inserted in files
+   Frequency: 50% of files (when enabled)
+   Default: DISABLED
+   Purpose: Social presence simulation
+   Code: Line ~1596-1604 (chat insertion logic)
+   Note: Currently disabled in workflow by default
+
+2. SPECIFIC FOLDERS FILTERING
+   Status: ⚙️ OPTIONAL (--specific-folders <file>)
+   What: Only process folders listed in file
+   Default: Process ALL folders
+   Purpose: Run subset of activities
+   Code: Line ~1402-1427 (filtering logic)
+
+═══════════════════════════════════════════════════════════════════════════
+"""
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1057,7 +1287,9 @@ def scan_for_numbered_subfolders(base_path):
     Scans folder for subfolders with numbers in their names.
     Also checks for "dont mess with me" subfolder and "optional" folders.
     
-    Accepts: "1", "part1", "step2", "3-action", "3 optional- walk", etc.
+    Accepts: "1", "part1", "step2", "3-action", "3 optional- walk", "3.5- insert", etc.
+    DECIMAL SUPPORT: "3.5" will be placed after "3" and before "4"
+    
     Returns tuple: (numbered_folders_dict, dmwm_file_set, non_json_files_list)
     
     numbered_folders: {num: {'files': [...], 'is_optional': bool}}
@@ -1084,10 +1316,11 @@ def scan_for_numbered_subfolders(base_path):
             print(f"  ⚠️  Found 'dont mess with me' folder: {len(dmwm_files)} unmodified files")
             continue
         
-        # Extract number from folder name using regex
-        match = re.search(r'\d+', item.name)
+        # Extract number from folder name using regex (supports decimals!)
+        # Matches: "1", "2.5", "3.14", etc.
+        match = re.search(r'\d+\.?\d*', item.name)
         if match:
-            folder_num = int(match.group())
+            folder_num = float(match.group())
             all_json_files = sorted(item.glob("*.json"))
             
             # Separate "always first", "always last", and regular files
@@ -1266,8 +1499,11 @@ class ManualHistoryTracker:
             if not combination:
                 continue
             
-            # Create signature
-            signature = "|".join(f"F{fn}={f.name}" for fn, f in combination)
+            # Create signature (format folder numbers cleanly)
+            signature = "|".join(
+                f"F{int(fn) if fn == int(fn) else fn}={f.name}" 
+                for fn, f in combination
+            )
             
             # Check if unused
             if signature not in self.used_combinations:
@@ -1590,8 +1826,11 @@ def main():
                 if not combo:
                     break
                 
-                # Track this combination signature
-                combo_signature = "|".join(f"F{fn}={f.name}" for fn, f in combo)
+                # Track this combination signature (format folder numbers cleanly)
+                combo_signature = "|".join(
+                    f"F{int(fn) if fn == int(fn) else fn}={f.name}" 
+                    for fn, f in combo
+                )
                 folder_combinations_used.append(combo_signature)
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
