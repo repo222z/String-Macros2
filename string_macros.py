@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.15.1 - PRE-Play Buffer Testing
-- TESTING: PRE-Play Buffer set to flat 700ms (was 800-1500ms random)
-- REMINDER: Remember to review this change in next task
-- All v3.15.0 features maintained
+string_macros.py - v3.15.2 - CRITICAL BUG FIX: Click Timing
+- FIXED: MASSIVE PAUSE causing clicks to be held 1-4 seconds (drag/clamp issues)
+- Root cause: Pause was inserted right before DragStart, shifting DragEnd forward
+- Fix: Added check to prevent pause insertion immediately before DragStart events
+- TESTING: PRE-Play Buffer still at flat 700ms (remember to review)
+- All v3.15.1 features maintained
 """
 
 # ============================================================================
@@ -35,7 +37,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.15.1"
+VERSION = "v3.15.2"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -128,14 +130,20 @@ These features add natural pauses and delays to prevent robotic timing patterns.
      - Drag sequences (between DragStart and DragEnd)
      - Rapid click sequences (double-clicks, spam clicks)
      - First/last 10% of file (for safety)
+     - Immediately BEFORE DragStart events (FIX v3.15.2)
    Where: Random safe point in middle 80% of file
    File Types:
      - Raw: ❌ NOT USED
      - Inefficient: ✅ INSERTED
      - Normal: ❌ NOT USED
    Purpose: Simulates AFK/distracted behavior
-   Code: Line ~1155-1203 (insert_massive_pause with exclusions)
+   Code: Line ~1171-1220 (insert_massive_pause with drag protection)
    Manifest: "INEFFICIENT MASSIVE PAUSE: Xm Xs"
+   
+   BUG FIX (v3.15.2): Added check to prevent pause insertion immediately before
+   DragStart events. Previously, pauses could be inserted right before DragStart,
+   which shifted the DragEnd forward in time, making clicks appear to last 1-4
+   seconds instead of <150ms, causing drag/clamp issues.
 
 6. MULTIPLIER SYSTEM
    Status: ✅ ACTIVE (Always)
@@ -1201,6 +1209,17 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
         
         # Check if in protected range (rapid clicks)
         if is_in_protected_range(i, protected_ranges):
+            continue
+        
+        # CRITICAL FIX: Check if NEXT event is DragStart
+        # If pause is inserted right before DragStart, it shifts the DragEnd forward,
+        # making the drag appear to last much longer than it actually does!
+        if i + 1 < len(events) and events[i + 1].get("Type") == "DragStart":
+            continue
+        
+        # Also check if NEXT event is part of a drag sequence
+        # (this catches edge cases where there might be events between pause and DragStart)
+        if i + 1 < len(events) and is_in_drag_sequence(events, i + 1):
             continue
         
         # This is a safe index
