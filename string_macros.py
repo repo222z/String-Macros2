@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.14.0 - Feature Refinements & Safety Updates
-- RENAMED: "dont mess with me" → "Don't use features on me" (backward compatible)
-- UPDATED: INEFFICIENT Before File Pause (20-50 sec, file length check >= 20s)
-- UPDATED: INEFFICIENT MASSIVE PAUSE (500-2900ms × mult, safe location detection)
-- ADDED: Safe location detection for MASSIVE PAUSE (excludes drags, rapid clicks, edges)
-- FIXED: File length check prevents INEFFICIENT Before File Pause on short files
-- Time sensitive folders from v3.13.0 maintained
-- All v3.13.0 features maintained
+string_macros.py - v3.14.2 - Main Folder Time Sensitive Support
+- NEW: Main folder "time sensitive" tag now applies to ALL subfolders!
+- FIXED: If main folder has "time sensitive", all numbered subfolders inherit it
+- Priority: Main folder tag > Individual subfolder tags
+- Enhanced debugging from v3.14.1 maintained
+- All v3.14.0 features maintained
 """
 
 # ============================================================================
@@ -39,7 +37,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.14.0"
+VERSION = "v3.14.2"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -54,6 +52,9 @@ FOLDER TAGS (detected in folder name, case-insensitive):
   • "end"             → Folder becomes definitive loop endpoint (stops after)
   • "optional/end"    → Combination: optional folder that ends loop IF chosen
   • "time sensitive"  → No inefficient files generated (replaced with normal files)
+                        Can be applied to:
+                        - Main folder → ALL subfolders become time_sensitive
+                        - Individual subfolders → Only that subfolder is time_sensitive
   • (Decimal support: "3.5" goes between folders 3 and 4)
 
 FILE TAGS (detected in filename, case-insensitive):
@@ -300,15 +301,32 @@ These features ensure files play correctly without breaking or causing errors.
 
 10. 'TIME SENSITIVE' TAGGED FOLDERS
     Status: ✅ ACTIVE (If "time sensitive" in folder name)
-    New Feature: v3.13.0
+    New Feature: v3.13.0 | Enhanced: v3.14.2
     Tag Detection: "time sensitive" anywhere in folder name (case-insensitive)
-    Behavior: NO inefficient files generated for this folder
+    Behavior: NO inefficient files generated
+    
+    Two Application Modes:
+      A) MAIN FOLDER TAGGED:
+         Example: "61- Mining TIME SENSITIVE/"
+                    └── 1- setup/
+                    └── 2- mine/
+                    └── 3- bank/
+         Result: ALL subfolders (1, 2, 3) become time_sensitive
+         
+      B) INDIVIDUAL SUBFOLDER TAGGED:
+         Example: "61- Mining/"
+                    └── 1- setup/
+                    └── 2 time sensitive- mine/  ← Only this one
+                    └── 3- bank/
+         Result: Only subfolder 2 is time_sensitive
+    
     File Distribution Changes:
       - Regular folder: 3 Raw + 3 Inef + 6 Normal = 12 files
       - Time sensitive: 3 Raw + 0 Inef + 9 Normal = 12 files
-    Example: "2 time sensitive- combat/"
+    
+    Priority: Main folder tag overrides individual subfolder tags
     Purpose: Activities requiring consistent timing (combat, PvP, timed tasks)
-    Code: Line ~1444 (is_time_sensitive detection), Line ~1894 (file type adjustment)
+    Code: Line ~1449-1459 (main folder check), Line ~1505-1511 (subfolder check)
     Note: Entire bundle affected if ANY folder is time_sensitive
 
 11. 'DON'T USE FEATURES ON ME' TAGGED FOLDERS
@@ -1437,6 +1455,9 @@ def scan_for_numbered_subfolders(base_path):
     Scans folder for subfolders with numbers in their names.
     Also checks for "dont mess with me" subfolder and "optional" folders.
     
+    NEW: Checks main folder name for "time sensitive" tag.
+    If main folder is tagged, ALL subfolders become time_sensitive!
+    
     Accepts: "1", "part1", "step2", "3-action", "3 optional- walk", "3.5- insert", etc.
     DECIMAL SUPPORT: "3.5" will be placed after "3" and before "4"
     
@@ -1450,6 +1471,12 @@ def scan_for_numbered_subfolders(base_path):
     numbered_folders = {}
     unmodified_files = []
     non_json_files = []
+    
+    # NEW: Check if MAIN FOLDER is tagged with "time sensitive"
+    # If so, ALL subfolders inside will be time_sensitive!
+    main_folder_time_sensitive = 'time sensitive' in base.name.lower()
+    if main_folder_time_sensitive:
+        print(f"  ⏱️  MAIN FOLDER is TIME SENSITIVE - All subfolders will skip inefficient files!")
     
     for item in base.iterdir():
         if not item.is_dir():
@@ -1499,7 +1526,11 @@ def scan_for_numbered_subfolders(base_path):
             is_end = 'end' in item.name.lower()
             
             # Check if folder is "time sensitive" (no inefficient files generated)
-            is_time_sensitive = 'time sensitive' in item.name.lower()
+            # Priority: Main folder tag > Individual subfolder tag
+            if main_folder_time_sensitive:
+                is_time_sensitive = True  # Main folder overrides all
+            else:
+                is_time_sensitive = 'time sensitive' in item.name.lower()
             
             # "optional/end" combo: optional folder that ends loop if chosen
             is_optional_end = is_optional and is_end
@@ -1797,6 +1828,10 @@ def main():
                             special_folders.append(f"{num} (end)")
                         elif folder_info.get('is_optional'):
                             special_folders.append(f"{num} (optional)")
+                        
+                        # Also mark time_sensitive folders
+                        if folder_info.get('is_time_sensitive'):
+                            special_folders.append(f"{num} (time sensitive)")
                 
                 if special_folders:
                     print(f"  Special: {', '.join(special_folders)}")
@@ -1946,6 +1981,15 @@ def main():
             for folder_data in subfolder_files.values()
         )
         
+        # Debug: Show which folders are time_sensitive
+        if has_time_sensitive:
+            time_sensitive_folders = [
+                str(int(num) if num == int(num) else num)
+                for num, data in subfolder_files.items() 
+                if data.get('is_time_sensitive', False)
+            ]
+            print(f"  ⏱️  TIME SENSITIVE folders detected: {', '.join(time_sensitive_folders)}")
+        
         # Version loop: 3 Raw + 3 Inef + 6 Normal = 12 total
         # OR: 3 Raw + 0 Inef + 9 Normal = 12 total (if time_sensitive)
         version_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
@@ -1955,11 +1999,12 @@ def main():
             # Time sensitive: Replace inefficient files with normal files
             num_inef = 0
             num_normal = 9
-            print(f"  ⏱️  TIME SENSITIVE folder detected - Generating 0 Inef + 9 Normal (instead of 3 Inef + 6 Normal)")
+            print(f"  📊 File distribution: 3 Raw + 0 Inef + 9 Normal (instead of 3 Inef + 6 Normal)")
         else:
             # Regular: Standard distribution
             num_inef = 3
             num_normal = 6
+            print(f"  📊 File distribution: 3 Raw + 3 Inef + 6 Normal (standard)")
         
         for v_idx in range(min(args.versions, 12)):
             v_letter = version_letters[v_idx]
@@ -1968,6 +2013,14 @@ def main():
             is_raw = (v_idx < num_raw)
             is_inef = (num_raw <= v_idx < num_raw + num_inef)
             is_normal = (v_idx >= num_raw + num_inef)
+            
+            # DEBUG: Show file type determination
+            if v_idx == 0:  # First file
+                print(f"\n  🔍 File Type Assignments:")
+            
+            file_type_str = "RAW" if is_raw else ("INEFFICIENT" if is_inef else "NORMAL")
+            prefix_str = "^" if is_raw else ("¬¬" if is_inef else "none")
+            print(f"     {v_letter}: {file_type_str:12s} (prefix: {prefix_str})")
             
             # Set multiplier (UPDATED v3.13.0)
             if is_raw:
@@ -2148,6 +2201,10 @@ def main():
             
             # Save file
             (out_folder / fname).write_text(json.dumps(stringed_events, indent=2))
+            
+            # DEBUG: Show created file
+            type_label = "RAW" if is_raw else ("INEF" if is_inef else "NORM")
+            print(f"     ✓ Created: {fname:<30s} [{type_label}]")
             
             # Build manifest entry
             separator = "=" * 40
