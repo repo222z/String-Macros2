@@ -1,8 +1,13 @@
-name: String macros (v3.10.1 - Node.js 24 compatible)
+name: String macros (v3.11.0 - UI improvements)
 
 on:
   workflow_dispatch:
     inputs:
+      specific_folders_input:
+        description: 'Specific folders to include'
+        required: false
+        default: ''
+        type: string
       enable_chat:
         description: 'Enable chat inserts (50% of files)'
         required: false
@@ -21,11 +26,6 @@ on:
         description: 'Target duration per stringed file *'
         required: true
         default: '60'
-      specific_folders_input:
-        description: 'Specific folders to include'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: write
