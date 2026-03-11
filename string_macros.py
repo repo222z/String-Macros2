@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.17.0 - Timing Order Fix & Workflow Improvements
-- FIXED: Cursor pathing now happens BEFORE PRE-play pause (more logical flow)
-  - OLD: File ends → Pause → Cursor moves → Next file
-  - NEW: File ends → Cursor moves → Pause → Next file
-  - Cursor movement is now part of previous file's "outro"
+string_macros.py - v3.17.0 - PRE-Play Buffer Update & Workflow Improvements
+- UPDATED: PRE-Play Buffer now 800ms (was 700ms testing value)
+- CONFIRMED: PRE-play pause happens BEFORE cursor movement (original order)
+  - Order: File ends → 800ms pause → Cursor moves → Next file
+  - Ensures clicks are fully released before any movement
 - Workflow v3.12.0: Flat ZIP structure when using specific folders mode
 - All v3.16.0 features maintained
 """
@@ -90,12 +90,13 @@ These features add natural pauses and delays to prevent robotic timing patterns.
    Status: ✅ ACTIVE (Always, all file types)
    Old Name: "Pre-file pauses"
    What: Fixed pause BEFORE each file starts playing
-   Duration: 700ms (0.7 seconds) - FLAT, NO multiplier, NO randomization
-   Purpose: Click release protection (prevents drag bugs from previous file)
-   Code: Line ~1276-1284 (pre_file_pause)
-   Total Impact: ~2m 20s per 50-minute output (200 files × 700ms)
+   Duration: 800ms (0.8 seconds) - FLAT, NO multiplier, NO randomization
+   When: Applied BEFORE cursor movement (click release protection)
+   Purpose: Ensures clicks from previous file are fully released
+   Code: Line ~1376-1384 (pre_file_pause)
+   Total Impact: ~2m 40s per 50-minute output (200 files × 800ms)
    Manifest: "PRE-Play Buffer: Xm Xs"
-   NOTE: Testing change - remember to adjust if needed!
+   Order: PRE-pause → Cursor transition → File plays
 
 3. INEFFICIENT BEFORE FILE PAUSE
    Status: ✅ ACTIVE (Inefficient files ONLY, file >= 25 seconds)
@@ -1373,9 +1374,17 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         # Normalize timing
         base_time = min(e.get('Time', 0) for e in events)
         
-        # CURSOR TRANSITION FIRST (as part of previous file's "outro")
-        # Then PRE-PLAY PAUSE happens before next file starts
+        # PRE-FILE PAUSE: 0.8 seconds BEFORE file plays (FLAT, NO multiplier)
+        # This prevents drag issues when previous file ended with a click!
         if cycle_events:
+            # Fixed pause: 800ms exactly
+            pre_file_pause = 800
+            timeline += pre_file_pause
+            
+            # Track this pause
+            total_pre_pause += pre_file_pause
+            
+            # NOW do cursor transition (AFTER pause, so click has time to release)
             # Get last position from previous file
             last_x, last_y = None, None
             for e in reversed(cycle_events):
@@ -1390,10 +1399,15 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     first_x, first_y = int(e['X']), int(e['Y'])
                     break
             
+            # POST-PAUSE DELAY: DISABLED (marked for removal in v4.0)
+            post_pause_delay = 0
+            timeline += post_pause_delay
+            total_post_pause += post_pause_delay
+            
             # Transition duration: 200-400ms (for actual cursor movement)
             transition_duration = int(rng.uniform(200, 400))
             
-            # Add smooth cursor transition (part of previous file's ending)
+            # Add smooth cursor transition AFTER pause
             if last_x and first_x and (last_x != first_x or last_y != first_y):
                 transition_path = generate_human_path(
                     last_x, last_y, first_x, first_y,
@@ -1421,19 +1435,6 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     'X': first_x,
                     'Y': first_y
                 })
-            
-            # NOW: PRE-FILE PAUSE (700ms AFTER cursor has moved)
-            # This gives a pause at the starting position before file plays
-            pre_file_pause = 700
-            timeline += pre_file_pause
-            
-            # Track this pause
-            total_pre_pause += pre_file_pause
-            
-            # POST-PAUSE DELAY: DISABLED (marked for removal in v4.0)
-            post_pause_delay = 0
-            timeline += post_pause_delay
-            total_post_pause += post_pause_delay
         
         # Add events from current file
         for event in events:
