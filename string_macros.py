@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.0"
+VERSION = "v3.18.1"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2009,12 +2009,12 @@ def main():
         folder_num_match = re.search(r'\d+', cleaned_folder_name)
         folder_number = int(folder_num_match.group()) if folder_num_match else 0
         
-        print(f"\n🔨 Processing: {output_folder_name if args.specific_folders else cleaned_folder_name}")
         
         # Create output folder — append bundle ID in specific folders mode
         output_folder_name = cleaned_folder_name
         if args.specific_folders:
             output_folder_name = f"{cleaned_folder_name}- {args.bundle_id}"
+        print(f"\n🔨 Processing: {output_folder_name}")
         out_folder = bundle_dir / output_folder_name
         out_folder.mkdir(parents=True, exist_ok=True)
         
