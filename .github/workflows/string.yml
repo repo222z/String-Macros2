@@ -1,4 +1,4 @@
-name: String macros (v3.11.0 - UI improvements)
+name: String macros (v3.12.0 - Flat ZIP for specific folders)
 
 on:
   workflow_dispatch:
@@ -178,9 +178,21 @@ jobs:
           ls -R output/
           
           if [ -d "output/$BUNDLE_NAME" ]; then
-            cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
-            cd ..
-            echo "✓ Created: $ZIP_FILE"
+            # Check if specific folders mode is enabled
+            if [ "${{ inputs.use_specific_folders }}" = "true" ]; then
+              # SPECIFIC FOLDERS MODE: Zip contents directly (flat structure)
+              echo "Specific folders mode: Creating flat ZIP structure..."
+              cd "output/$BUNDLE_NAME"
+              zip -r "../../$ZIP_FILE" .
+              cd ../..
+              echo "✓ Created flat structure: $ZIP_FILE"
+            else
+              # NORMAL MODE: Zip the entire bundle directory
+              echo "Normal mode: Creating standard ZIP structure..."
+              cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
+              cd ..
+              echo "✓ Created: $ZIP_FILE"
+            fi
           else
             echo "✗ Error: Directory output/$BUNDLE_NAME was not found!"
             exit 1
