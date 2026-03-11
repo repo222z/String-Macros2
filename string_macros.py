@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.1"
+VERSION = "v3.18.2"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -273,15 +273,6 @@ These features ensure files play correctly without breaking or causing errors.
    Purpose: Maximum variety across runs
    Code: Line ~1380-1510 (ManualHistoryTracker class)
 
-4. COMBINATION HISTORY
-   Status: ✅ ACTIVE (Always)
-   What: Tracks which folder combinations have been used
-   Prevents: Repeating same combination across cycles
-   Tracking: "F1=file01.json|F2=file05.json|F3=file12.json"
-   File: COMBINATION_HISTORY_XX.txt (created per bundle)
-   Purpose: Maximum variety across runs
-   Code: Line ~1380-1510 (ManualHistoryTracker class)
-
 5. MANUAL HISTORY UPLOAD
    Status: ✅ ACTIVE (If files present)
    What: Upload old combination files to avoid repeating them
@@ -419,6 +410,49 @@ These features ensure files play correctly without breaking or causing errors.
     Default: DISABLED in workflows
     Purpose: Social presence simulation
     Code: Line ~1850-1860 (chat insertion - currently bypassed)
+
+17. PRE-PLAY BUFFER GUARANTEE (files_added counter)
+    Status: ✅ ACTIVE (Always)
+    Added: v3.17.2
+    What: Guarantees the pre-play buffer (300ms) fires before EVERY file transition,
+          including always_first and always_last files.
+    Problem It Solved:
+      - The original guard was "if cycle_events:" — checking if the events list was
+        non-empty to decide whether to insert the buffer.
+      - Python's nonlocal binding means if the outer scope ever rebinds cycle_events
+        (e.g. cycle_events = []) after the inner function captures it, the inner
+        function's nonlocal lookup sees the old empty reference.
+      - Result: always_first / always_last files started at 0ms after the previous
+        file ended — no buffer, no cursor path. Last click of previous file and first
+        click of next file fired on the same millisecond, causing missed actions.
+    Fix: Replaced "if cycle_events:" with "if files_added > 0:" using an explicit
+         integer counter. Integers cannot be silently rebound the same way as lists.
+         Counter is declared in outer scope, accessed via nonlocal, incremented by 1
+         after every successful file add.
+    Also Fixed: Cursor path condition was "if last_x and first_x" — this silently
+                fails when X=0 (a valid screen coordinate, evaluates as falsy in Python).
+                Changed to "if last_x is not None and first_x is not None".
+    Impact: All file transitions now guaranteed to have:
+              File ends → 300ms buffer → cursor path → next file starts
+    Code: add_file_to_cycle() inner function; files_added init in string_cycle()
+
+18. FAIL-FAST ERROR HANDLING
+    Status: ✅ ACTIVE (Always)
+    Added: v3.17.1
+    What: All fatal early-exit conditions now call sys.exit(1) instead of return.
+    Problem It Solved:
+      - "return" in main() exits with code 0 (success). GitHub Actions saw the Python
+        step succeed, continued to the ZIP step, and failed there with a confusing
+        "empty directory" error — hiding the real cause.
+      - Made debugging very slow: error appeared in the wrong step entirely.
+    Conditions Now Covered:
+      • Input root folder not found → exits, prints the path it searched
+      • No numbered subfolders found → exits, prints directory contents
+      • Specific folders file missing or unreadable → exits with reason
+      • None of the specified folder names matched → exits, prints what it looked
+        for vs what was actually available (most common cause: name mismatch)
+    Result: Workflow fails at the Python step with the exact reason visible in logs.
+    Code: main() — four sys.exit(1) calls replacing return statements
 
 ═══════════════════════════════════════════════════════════════════════════
 """
