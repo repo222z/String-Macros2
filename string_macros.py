@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.17.0 - PRE-Play Buffer Update & Workflow Improvements
-- UPDATED: PRE-Play Buffer now 800ms (was 700ms testing value)
-- CONFIRMED: PRE-play pause happens BEFORE cursor movement (original order)
-  - Order: File ends → 800ms pause → Cursor moves → Next file
-  - Ensures clicks are fully released before any movement
-- Workflow v3.12.0: Flat ZIP structure when using specific folders mode
-- All v3.16.0 features maintained
+string_macros.py - v3.17.2 - PRE-Play Buffer Bug Fix (always_first/always_last)
+- FIXED: PRE-Play buffer (800ms) was silently skipped for always_first and always_last files
+- ROOT CAUSE: add_file_to_cycle used 'if cycle_events:' as guard. If the list reference
+  was ever rebound (nonlocal rebinding edge case), this evaluated False even when files
+  existed, causing the entire 800ms + cursor path block to be skipped.
+- FIX: Replaced 'if cycle_events:' with explicit 'files_added' integer counter.
+  Counter is declared in outer scope, passed via nonlocal, incremented after every
+  successful file add. Guard is now 'if files_added > 0:' - unambiguous and robust.
+- ALSO FIXED: Cursor path used 'if last_x and first_x' which fails when X=0 (valid coord).
+  Now uses 'if last_x is not None and first_x is not None'.
+- ORDER CONFIRMED: 800ms buffer → cursor path → file plays (unchanged, was already correct)
+- RESULT: Every file transition (including always_first, always_last) now guaranteed to
+  have the 800ms pre-play buffer and cursor path before the file starts.
+- All v3.17.0 features maintained
 """
 
 # ============================================================================
@@ -38,7 +45,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.17.0"
+VERSION = "v3.17.2"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -1350,7 +1357,7 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     
     def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
         """Helper to add a file to the cycle"""
-        nonlocal timeline, cycle_events, file_info_list, has_dmwm, total_pre_pause, total_post_pause, total_transition_time
+        nonlocal timeline, cycle_events, file_info_list, has_dmwm, total_pre_pause, total_post_pause, total_transition_time, files_added
         
         # Load events
         try:
@@ -1374,47 +1381,41 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         # Normalize timing
         base_time = min(e.get('Time', 0) for e in events)
         
-        # PRE-FILE PAUSE: 0.8 seconds BEFORE file plays (FLAT, NO multiplier)
-        # This prevents drag issues when previous file ended with a click!
-        if cycle_events:
-            # Fixed pause: 800ms exactly
+        # PRE-FILE PAUSE: 0.8 seconds FLAT before EVERY file (except the very first)
+        # Uses files_added counter instead of checking cycle_events length,
+        # which can silently fail if the list reference is ever rebound.
+        # ORDER: 800ms wait FIRST → cursor path SECOND → file plays
+        if files_added > 0:
+            # STEP 1: 800ms buffer (no multiplier, always flat)
             pre_file_pause = 800
             timeline += pre_file_pause
-            
-            # Track this pause
             total_pre_pause += pre_file_pause
-            
-            # NOW do cursor transition (AFTER pause, so click has time to release)
-            # Get last position from previous file
-            last_x, last_y = None, None
-            for e in reversed(cycle_events):
-                if e.get('X') is not None and e.get('Y') is not None:
-                    last_x, last_y = int(e['X']), int(e['Y'])
-                    break
-            
-            # Get first position of current file
-            first_x, first_y = None, None
-            for e in events:
-                if e.get('X') is not None and e.get('Y') is not None:
-                    first_x, first_y = int(e['X']), int(e['Y'])
-                    break
             
             # POST-PAUSE DELAY: DISABLED (marked for removal in v4.0)
             post_pause_delay = 0
             timeline += post_pause_delay
             total_post_pause += post_pause_delay
             
-            # Transition duration: 200-400ms (for actual cursor movement)
+            # STEP 2: Cursor transition AFTER the 800ms buffer
+            last_x, last_y = None, None
+            for e in reversed(cycle_events):
+                if e.get('X') is not None and e.get('Y') is not None:
+                    last_x, last_y = int(e['X']), int(e['Y'])
+                    break
+            
+            first_x, first_y = None, None
+            for e in events:
+                if e.get('X') is not None and e.get('Y') is not None:
+                    first_x, first_y = int(e['X']), int(e['Y'])
+                    break
+            
             transition_duration = int(rng.uniform(200, 400))
             
-            # Add smooth cursor transition AFTER pause
-            if last_x and first_x and (last_x != first_x or last_y != first_y):
+            if last_x is not None and first_x is not None and (last_x != first_x or last_y != first_y):
                 transition_path = generate_human_path(
                     last_x, last_y, first_x, first_y,
                     transition_duration, rng
                 )
-                
-                # Add transition movements
                 for rel_time, x, y in transition_path:
                     cycle_events.append({
                         'Type': 'MouseMove',
@@ -1422,13 +1423,10 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                         'X': x,
                         'Y': y
                     })
-                
                 timeline += transition_duration
-                
-                # Track transition time
                 total_transition_time += transition_duration
                 
-                # Final position to ensure exact placement
+                # Final snap to exact start position
                 cycle_events.append({
                     'Type': 'MouseMove',
                     'Time': timeline,
@@ -1445,14 +1443,17 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         # Update timeline and track THIS file's end time
         if cycle_events:
             timeline = cycle_events[-1]['Time']
-            # Track file info with its individual end time
             file_info_list.append((folder_num, file_label, is_dmwm, timeline))
+        
+        # Increment counter AFTER successful file add (used for pre-play buffer guard)
+        files_added += 1
     
     # Main cycle building
     cycle_events = []
     file_info_list = []
     timeline = 0
     has_dmwm = False
+    files_added = 0  # Counts files added so far; used to guard pre-play buffer
     
     # NEW: Track pre-file pauses, post-pause delays, and cursor transitions
     total_pre_pause = 0
