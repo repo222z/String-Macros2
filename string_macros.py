@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.10"
+VERSION = "v3.18.11"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -306,10 +306,20 @@ These features ensure files play correctly without breaking or causing errors.
    Old Name: "Optional folders"
    Tag Detection: "optional" anywhere in folder name (case-insensitive)
    Behavior: Folder has random chance to be included in each cycle
-   Chance: 24-33% (randomized per bundle, consistent within bundle)
-   Example: "3 optional- bank early/"
-   Purpose: Unpredictable action path variations
-   Code: Line ~1442 (is_optional detection)
+   Chance (default): 24-33% random range (rolled once per bundle, consistent within bundle)
+   Custom Chance: Append a number directly to the tag to override the default
+     • "optional50%"  → exactly 50% chance
+     • "optional10"   → exactly 10% chance
+     • "optional75"   → exactly 75% chance
+     • "optional"     → default 24-33% range (no number = use default)
+     The number is parsed from the tag itself; spaces, dashes, and % are ignored.
+   Examples:
+     "3 optional- bank early/"           → default 24-33% chance
+     "3 optional50- bank early/"         → exactly 50% chance
+     "3 optional50%- bank early/"        → exactly 50% chance
+     "3 optional10- rare action/"        → exactly 10% chance
+   Purpose: Unpredictable action path variations with per-folder probability control
+   Code: Line ~1442 (is_optional detection + parse_optional_chance())
 
 9. 'END' TAGGED FOLDERS
    Status: ✅ ACTIVE (If "end" in folder name)
@@ -323,10 +333,12 @@ These features ensure files play correctly without breaking or causing errors.
     Status: ✅ ACTIVE (If both "optional" and "end" in name)
     Tag Detection: Both "optional" AND "end" in folder name
     Behavior: 
-      - 24-33% chance to include folder
+      - Chance to include folder (same custom % syntax as Feature 8)
       - IF included: Loop stops at this folder
       - IF skipped: Loop continues to next folders
-    Example: "3.5 optional/end- early bank/"
+    Examples:
+      "3.5 optional/end- early bank/"    → default 24-33% chance
+      "3.5 optional50/end- early bank/"  → exactly 50% chance
     Purpose: Sometimes end early, sometimes continue full loop
     Code: Line ~1448-1462 (is_optional_end handling)
 
@@ -478,6 +490,33 @@ These features ensure files play correctly without breaking or causing errors.
                exist directly in the folder
     Code: scan_for_numbered_subfolders() — flat folder block at end of function
 
+20. FILE TRANSITION START GAP PROTECTION
+    Status: ✅ ACTIVE (Always, when positions differ between files)
+    Added: v3.18.10
+    What: Inserts a short gap (80-150ms) between the cursor snap event and the
+          first event of the incoming file at every file transition.
+    Problem It Solved:
+      - After a cursor transition path, the script places a final "snap" MouseMove
+        at exactly 'timeline'. The first event of the next file also lands at
+        exactly 'timeline' (its relative time is always 0ms after normalisation).
+      - When that first event is a DragStart, both the snap and the DragStart share
+        the same timestamp. The macro player interprets simultaneous events as
+        concurrent — the drag fires with no physical separation from the move,
+        causing the mouse to clamp at the start position.
+    Fix: After placing the snap MouseMove, advance 'timeline' by 80-150ms before
+         appending any file events. The sequence becomes:
+           ...cursor path...
+           +0ms   MouseMove (snap to start position)  ← transition end
+           +80-150ms gap
+           +0ms   DragStart (file begins)             ← safely separated
+    Relationship to Feature 17:
+      Feature 17 (Pre-play Buffer) protects the END of the outgoing file (prevents
+      the previous DragEnd from being immediately followed by a cursor snap).
+      Feature 20 protects the START of the incoming file (prevents the cursor snap
+      from being immediately followed by the file's first DragStart).
+      Both are needed; they guard opposite sides of every transition.
+    Code: add_file_to_cycle() — post_snap_gap after final snap MouseMove
+
 ═══════════════════════════════════════════════════════════════════════════
 """
 
@@ -519,6 +558,34 @@ def filter_problematic_keys(events: list) -> list:
         filtered.append(event)
     
     return filtered
+
+def parse_optional_chance(folder_name: str) -> float:
+    """
+    Parse the inclusion probability from an 'optional'-tagged folder name.
+
+    Rules:
+      - No number after 'optional'  → random default 24-33%
+      - Number found (with/without %) → clamp to [1%, 99%] and use as fixed %
+
+    Accepted formats (all case-insensitive):
+      "3 optional- bank/"          → random 0.24-0.33
+      "3 optional50- bank/"        → 0.50
+      "3 optional50%- bank/"       → 0.50
+      "3 optional 50- bank/"       → 0.50
+      "3 optional10/end- logout/"  → 0.10
+
+    Returns a float in (0, 1).
+    """
+    import re
+    # Find 'optional' then greedily grab any digits (with optional % or spaces)
+    match = re.search(r'optional\D{0,3}?(\d+)', folder_name, re.IGNORECASE)
+    if match:
+        pct = int(match.group(1))
+        pct = max(1, min(99, pct))   # clamp to 1–99
+        return pct / 100.0
+    # No number → default random range
+    return random.uniform(0.24, 0.33)
+
 
 def fix_click_events(events: list) -> list:
     """
@@ -1690,9 +1757,9 @@ def scan_for_numbered_subfolders(base_path):
                 else:
                     regular_files.append(json_file)
             
-            # Check if folder is "optional" (24-33% random chance to include)
+            # Check if folder is "optional" (default 24-33%, or custom % from tag)
             is_optional = 'optional' in item.name.lower()
-            optional_chance = random.uniform(0.24, 0.33) if is_optional else None
+            optional_chance = parse_optional_chance(item.name) if is_optional else None
             
             # Check if folder is "end" (becomes definitive end point)
             is_end = 'end' in item.name.lower()
