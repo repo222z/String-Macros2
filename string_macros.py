@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.11"
+VERSION = "v3.18.12"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -387,12 +387,26 @@ These features ensure files play correctly without breaking or causing errors.
     Status: ✅ ACTIVE (If tagged in filename)
     Tag Detection: "always first", "alwaysfirst", "always last", "alwayslast"
     Location: In filename (case-insensitive)
-    Behavior:
-      - "always first" → Plays first in its folder (before random selection)
-      - "always last" → Plays last in its folder (after random selection)
-    Example: "setup_always_first.json", "cleanup_alwayslast.json"
-    Purpose: Guaranteed sequence control within folders
-    Code: Line ~1333-1340 (always_first/last detection)
+    
+    Two Modes (auto-detected by folder structure):
+    
+      A) MULTI-SUBFOLDER MODE (2+ numbered subfolders):
+         Original behaviour. always_first/last wrap every selected file, every cycle.
+         Pattern per file slot: [ALWAYS FIRST] → selected file → [ALWAYS LAST]
+         Use case: Opener/closer needed around each action step (e.g. login per step)
+    
+      B) SINGLE-SUBFOLDER MODE (1 subfolder OR flat folder):
+         always_first plays once at the very beginning of the strung file.
+         always_last plays once at the very end of the strung file.
+         All selected files play in sequence in between.
+         Pattern: [ALWAYS FIRST] → file1 → file2 → file3 → ... → [ALWAYS LAST]
+         Use case: Global opener/closer (e.g. login once, do N actions, logout once)
+    
+    Examples:
+      "setup_always_first.json"   → plays at start
+      "cleanup_alwayslast.json"   → plays at end
+    Purpose: Guaranteed sequence control — either per-file or per-strung-file
+    Code: string_cycle() — single_subfolder check before/after combination loop
 
 14. COMPREHENSIVE MANIFEST
     Status: ✅ ACTIVE (Always)
@@ -1600,25 +1614,56 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     total_post_pause = 0
     total_transition_time = 0
     
+    # SINGLE-SUBFOLDER MODE: if only one subfolder exists, always_first/last
+    # should bracket the ENTIRE strung file (once at the very start, once at
+    # the very end) rather than wrapping every single selected file.
+    single_subfolder = len(subfolder_files) == 1
+    if single_subfolder:
+        # There is only one folder_num — grab its always_first/last once
+        only_folder_num = next(iter(subfolder_files))
+        only_folder_data = subfolder_files[only_folder_num]
+        single_always_first = only_folder_data.get('always_first')
+        single_always_last  = only_folder_data.get('always_last')
+        # Play always_first once before everything
+        if single_always_first:
+            is_dmwm = single_always_first in dmwm_file_set
+            add_file_to_cycle(single_always_first, only_folder_num, is_dmwm,
+                              f"[ALWAYS FIRST] {single_always_first.name}")
+    
     for folder_num, file_path in combination:
         # Get folder data
         folder_data = subfolder_files.get(folder_num, {})
         
-        # FIRST: Play "always first" if it exists
-        always_first = folder_data.get('always_first')
-        if always_first:
-            is_dmwm = always_first in dmwm_file_set
-            add_file_to_cycle(always_first, folder_num, is_dmwm, f"[ALWAYS FIRST] {always_first.name}")
-        
-        # SECOND: Play the selected file
-        is_dmwm = file_path in dmwm_file_set
-        add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
-        
-        # THIRD: Play "always last" if it exists
-        always_last = folder_data.get('always_last')
-        if always_last:
-            is_dmwm = always_last in dmwm_file_set
-            add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
+        if single_subfolder:
+            # Single-subfolder mode: skip per-iteration always_first/last;
+            # they are handled once above (first) and below (last).
+            is_dmwm = file_path in dmwm_file_set
+            add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
+        else:
+            # Multi-subfolder mode: always_first/last wrap every selected file
+            # (original behaviour — preserves sequence correctness across folders)
+            
+            # FIRST: Play "always first" if it exists
+            always_first = folder_data.get('always_first')
+            if always_first:
+                is_dmwm = always_first in dmwm_file_set
+                add_file_to_cycle(always_first, folder_num, is_dmwm, f"[ALWAYS FIRST] {always_first.name}")
+            
+            # SECOND: Play the selected file
+            is_dmwm = file_path in dmwm_file_set
+            add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
+            
+            # THIRD: Play "always last" if it exists
+            always_last = folder_data.get('always_last')
+            if always_last:
+                is_dmwm = always_last in dmwm_file_set
+                add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
+    
+    if single_subfolder and single_always_last:
+        # Play always_last once after everything
+        is_dmwm = single_always_last in dmwm_file_set
+        add_file_to_cycle(single_always_last, only_folder_num, is_dmwm,
+                          f"[ALWAYS LAST] {single_always_last.name}")
     
     return {
         'events': cycle_events,
