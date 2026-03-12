@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.9"
+VERSION = "v3.18.10"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -1501,6 +1501,13 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
                     'X': first_x,
                     'Y': first_y
                 })
+                
+                # POST-SNAP GAP: advance timeline so the file's first event
+                # (especially DragStart) never lands at the same timestamp as
+                # the snap MouseMove above. Without this, both share 'timeline'
+                # and the macro player sees a zero-gap DragStart = clamping.
+                post_snap_gap = int(rng.uniform(80, 150))
+                timeline += post_snap_gap
         
         # Add events from current file
         for event in events:
