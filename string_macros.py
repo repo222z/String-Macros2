@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.20"
+VERSION = "v3.18.22"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -833,11 +833,17 @@ def generate_human_path(start_x, start_y, end_x, end_y, duration_ms, rng):
 # ============================================================================
 
 
-def is_in_drag_sequence(events, index):
+def is_in_drag_sequence(events, index, drag_indices=None):
     """
     Check if the given index is inside a drag sequence (between DragStart and DragEnd).
     Returns True if we're in the middle of a drag.
+
+    If drag_indices (a precomputed set from build_drag_index_set) is provided,
+    the check is O(1). Otherwise falls back to the original O(n) scan.
     """
+    if drag_indices is not None:
+        return index in drag_indices
+
     drag_started = False
     for j in range(index, -1, -1):
         event_type = events[j].get("Type", "")
@@ -858,6 +864,24 @@ def is_in_drag_sequence(events, index):
             return False
     
     return False
+
+
+def build_drag_index_set(events) -> set:
+    """
+    Return the set of all event indices that are inside a drag sequence.
+    O(n) single pass — call this once, then use the result for O(1) lookups.
+    """
+    drag_indices = set()
+    in_drag = False
+    for i, e in enumerate(events):
+        t = e.get("Type", "")
+        if t == "DragStart":
+            in_drag = True
+        elif t == "DragEnd":
+            in_drag = False
+        if in_drag:
+            drag_indices.add(i)
+    return drag_indices
 
 def detect_rapid_click_sequences(events):
     """
@@ -961,30 +985,33 @@ def add_pre_click_jitter(events: list, rng: random.Random) -> tuple:
     
     # Step 1: Find ALL click times (any click-like event)
     click_types = {'Click', 'LeftDown', 'RightDown', 'DragStart'}
-    click_times = set()
-    
-    for event in events:
-        if event.get('Type') in click_types:
-            click_times.add(event.get('Time', 0))
-    
+    click_times_sorted = sorted(
+        event.get('Time', 0) for event in events if event.get('Type') in click_types
+    )
+
+    import bisect
+    exclusion_ms = 1000
+
     # Step 2: Find all MouseMove events that are SAFE to jitter
-    # Safe = NOT within 1000ms before/after ANY click
+    # Safe = NOT within 1000ms before/after ANY click  (O(n log c) total)
     safe_movements = []
     total_moves = 0
-    
+
     for i, event in enumerate(events):
         if event.get('Type') == 'MouseMove':
             total_moves += 1
             event_time = event.get('Time', 0)
-            
-            # Check if within exclusion zone of ANY click
+
+            # Binary search: nearest click before and after
+            pos = bisect.bisect_left(click_times_sorted, event_time)
             is_safe = True
-            for click_time in click_times:
-                time_diff = abs(event_time - click_time)
-                if time_diff <= 1000:  # Within 1 second
-                    is_safe = False
-                    break
-            
+            # Check click just before
+            if pos > 0 and event_time - click_times_sorted[pos - 1] <= exclusion_ms:
+                is_safe = False
+            # Check click at or after
+            if is_safe and pos < len(click_times_sorted) and click_times_sorted[pos] - event_time <= exclusion_ms:
+                is_safe = False
+
             if is_safe:
                 safe_movements.append((i, event))
     
@@ -1085,11 +1112,14 @@ def insert_intra_file_pauses(events: list, rng: random.Random, protected_ranges:
     # Randomly decide how many pauses for this file (1-4)
     num_pauses = rng.randint(1, 4)
     
+    # Build O(1) protected index set
+    protected_set = set()
+    for start, end in protected_ranges:
+        for k in range(start, end + 1):
+            protected_set.add(k)
+
     # Find valid indices (not in protected ranges)
-    valid_indices = []
-    for idx in range(1, len(events)):
-        if not is_in_protected_range(idx, protected_ranges):
-            valid_indices.append(idx)
+    valid_indices = [idx for idx in range(1, len(events)) if idx not in protected_set]
     
     if not valid_indices:
         return events, 0
@@ -1116,52 +1146,44 @@ def insert_intra_file_pauses(events: list, rng: random.Random, protected_ranges:
 def insert_idle_mouse_movements(events, rng, movement_percentage):
     """
     Insert realistic human-like mouse movements during idle periods (gaps > 2 seconds).
-    
-    Movements have:
-    - Variable speeds (fast bursts, slow drifts, hesitations)
-    - Imperfect paths (wobbles, overshoots, corrections)
-    - Natural patterns (wandering, checking, fidgeting)
-    - Smooth transition back to next recorded position
+    O(n) — drag membership and click-proximity lookups are precomputed as sets.
     """
     if not events or len(events) < 2:
         return events, 0
-    
+
+    # Precompute O(n) — used for O(1) per-event checks below
+    drag_indices = build_drag_index_set(events)
+
+    # Build set of indices that are within 3 s after a click event
+    # (idle movements must not be placed in those windows)
+    click_proximity = set()
+    click_window = 3000
+    click_types = {"Click", "LeftDown", "LeftUp", "RightDown", "RightUp"}
+    for i, e in enumerate(events):
+        if e.get("Type") in click_types:
+            t_click = e.get("Time", 0)
+            # mark all earlier indices whose next_time lands within the window
+            for j in range(i - 1, -1, -1):
+                if events[j].get("Time", 0) < t_click - click_window:
+                    break
+                click_proximity.add(j)
+
     result = []
     total_idle_time = 0
-    
+
     for i in range(len(events)):
         result.append(events[i])
-        
-        # Check gap to next event
+
         if i < len(events) - 1:
             current_time = int(events[i].get("Time", 0))
-            next_time = int(events[i + 1].get("Time", 0))
+            next_time    = int(events[i + 1].get("Time", 0))
             gap = next_time - current_time
-            
-            # Only process gaps >= 2 seconds
+
             if gap >= 2000:
-                # Skip if in drag sequence
-                if is_in_drag_sequence(events, i):
+                if i in drag_indices:
                     continue
-                
-                # CRITICAL: Check if there's a click within 3 seconds AFTER this gap
-                # This prevents idle movements from interfering with clicks!
-                click_too_close = False
-                check_window = 3000  # 3 seconds in ms
-                
-                for j in range(i + 1, len(events)):
-                    event_time = events[j].get("Time", 0)
-                    if event_time > next_time + check_window:
-                        break  # Past the 3-second window
-                    
-                    event_type = events[j].get("Type", "")
-                    if event_type in ("Click", "LeftDown", "LeftUp", "RightDown", "RightUp"):
-                        # Found a click within 3 seconds - skip idle movements!
-                        click_too_close = True
-                        break
-                
-                if click_too_close:
-                    continue  # Skip idle movements for this gap
+                if i in click_proximity:
+                    continue
                 
                 # Calculate active window
                 active_duration = int(gap * movement_percentage)
@@ -1477,32 +1499,24 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
     # Detect protected ranges (rapid clicks, double-clicks)
     protected_ranges = detect_rapid_click_sequences(events)
     
+    # Precompute drag membership O(n) → O(1) lookups
+    drag_indices = build_drag_index_set(events)
+
     # Find safe split points (not in drag, not in rapid click, not in first/last 10%)
     safe_indices = []
     first_safe = int(len(events) * 0.1)  # Skip first 10%
     last_safe = int(len(events) * 0.9)   # Skip last 10%
     
     for i in range(first_safe, last_safe):
-        # Check if in drag sequence
-        if is_in_drag_sequence(events, i):
+        if i in drag_indices:
             continue
-        
-        # Check if in protected range (rapid clicks)
         if is_in_protected_range(i, protected_ranges):
             continue
-        
-        # CRITICAL FIX: Check if NEXT event is DragStart
-        # If pause is inserted right before DragStart, it shifts the DragEnd forward,
-        # making the drag appear to last much longer than it actually does!
+        # Don't insert right before a DragStart
         if i + 1 < len(events) and events[i + 1].get("Type") == "DragStart":
             continue
-        
-        # Also check if NEXT event is part of a drag sequence
-        # (this catches edge cases where there might be events between pause and DragStart)
-        if i + 1 < len(events) and is_in_drag_sequence(events, i + 1):
+        if i + 1 < len(events) and (i + 1) in drag_indices:
             continue
-        
-        # This is a safe index
         safe_indices.append(i)
     
     # If no safe indices found, return original events
@@ -1925,9 +1939,11 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
         cur_y    = file_rng.randint(250, 450)
         last_act = None
 
-        # Per-feature cooldown: each feature has its own independent clock.
-        # Cooldown 17 000–40 000 ms (float, never rounded), drawn fresh each trigger.
-        next_allowed = {a: 0.0 for a in chosen}
+        # Shared cooldown: after any action fires, ALL features are locked out
+        # for a single random window of 17 000–30 000 ms (float ms, never rounded).
+        # A fresh cooldown is drawn each time any feature triggers, so the gap
+        # between every pair of consecutive actions is independently randomised.
+        next_allowed_any = 0.0   # earliest ms any action may next fire
 
         # OVERLAP CONTROL
         # Sequential fraction: random decimal in [90.0, 95.0] percent.
@@ -1951,34 +1967,32 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
         cur_x, cur_y = tx, ty
 
         while timeline < target:
-            # Actions available = chosen + off cooldown + no consecutive pause
+            # Wait for the shared cooldown window to expire
+            if timeline < next_allowed_any:
+                timeline = next_allowed_any + _human_interval(file_rng, 10.0, 80.0)
+                action_busy_until = max(action_busy_until, timeline)
+
+            # Actions available = chosen set minus consecutive-pause block
             available = [
                 a for a in chosen
-                if timeline >= next_allowed[a]
-                and not (a == 'pause' and last_act == 'pause')
+                if not (a == 'pause' and last_act == 'pause')
             ]
 
             if not available:
-                # All on cooldown — jump to earliest next_allowed
-                earliest = min(next_allowed[a] for a in chosen)
-                timeline = earliest + _human_interval(file_rng, 50.0, 300.0)
-                action_busy_until = max(action_busy_until, timeline)
+                # Only happens if all 3 chosen features are 'pause' (impossible
+                # with sample(3)), but guard anyway
+                last_act = None
                 continue
 
             avail_wts = [w for a, w in ACTION_WEIGHTS if a in available]
             action    = file_rng.choices(available, weights=avail_wts, k=1)[0]
 
-            # Decide: sequential (wait for previous to finish) or overlap (start now)?
-            # The probability is drawn as a float (e.g. 0.9247) so the boundary
-            # between sequential and overlap zones is itself a decimal percentage.
+            # Decide: sequential (wait for previous to finish) or overlap?
             if file_rng.random() < sequential_frac:
-                # Sequential zone: start after previous action fully ends
                 start_t = max(timeline, action_busy_until) + _safe_gap(file_rng)
             else:
-                # Overlap zone: start from current timeline (may interleave events)
                 start_t = timeline + _safe_gap(file_rng)
 
-            # Temporarily shift timeline to start_t so action helpers use it
             timeline = start_t
 
             if action == 'wander':
@@ -1992,12 +2006,31 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
             elif action == 'key_spam':
                 timeline = _add_key_spam(events, timeline, file_rng, cur_x, cur_y)
 
+            action_busy_until = timeline
+
+            # Draw a fresh shared cooldown after every trigger (float ms, never rounded)
+            cooldown = file_rng.uniform(17000.0, 30000.0)
+            next_allowed_any = timeline + cooldown
+
+            last_act = action
+            if timeline <= 0:
+                timeline = 1.0
+                timeline, cur_x, cur_y = _add_mouse_wander(events, timeline, file_rng, cur_x, cur_y)
+            elif action == 'pause':
+                timeline, cur_x, cur_y = _add_cursor_pause(events, timeline, file_rng, cur_x, cur_y)
+            elif action == 'right_click':
+                timeline, cur_x, cur_y = _add_right_click(events, timeline, file_rng, cur_x, cur_y)
+            elif action == 'type':
+                timeline = _add_typing(events, timeline, file_rng, cur_x, cur_y)
+            elif action == 'key_spam':
+                timeline = _add_key_spam(events, timeline, file_rng, cur_x, cur_y)
+
             # Record when this action's events end (for sequential enforcement)
             action_busy_until = timeline
 
-            # Set this feature's individual cooldown (float ms, never rounded)
-            cooldown = file_rng.uniform(17000.0, 40000.0)
-            next_allowed[action] = timeline + cooldown
+            # Draw a fresh shared cooldown after every trigger (float ms, never rounded)
+            cooldown = file_rng.uniform(17000.0, 30000.0)
+            next_allowed_any = timeline + cooldown
 
             last_act = action
             if timeline <= 0:
