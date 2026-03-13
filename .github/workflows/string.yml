@@ -159,22 +159,11 @@ jobs:
           
           git push || echo "Push failed"
             
-      - name: Add combination file to output
-        run: |
-          BUNDLE_DIR="output/stringed_bundle_${{ env.BUNDLE_SEQ }}"
-          COMBO_FILE="output/COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt"
-          
-          if [ -f "$COMBO_FILE" ]; then
-            cp "$COMBO_FILE" "$BUNDLE_DIR/" 2>/dev/null || echo "Could not copy combination file"
-            echo "✓ Copied combination file to bundle"
-          else
-            echo "⚠️ No combination file found at $COMBO_FILE"
-          fi
-            
       - name: Create ZIP artifact
         run: |
           BUNDLE_NAME="stringed_bundle_${{ env.BUNDLE_SEQ }}"
           ZIP_FILE="stringed_macros_${{ env.BUNDLE_SEQ }}.zip"
+          COMBO_FILE="output/COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt"
           
           echo "Creating ZIP from: output/$BUNDLE_NAME"
           ls -R output/
@@ -183,6 +172,7 @@ jobs:
             # Check if specific folders mode is enabled
             if [ "${{ inputs.use_specific_folders }}" = "true" ]; then
               # SPECIFIC FOLDERS MODE: Zip contents directly (flat structure)
+              # History file placed alongside the flat contents
               echo "Specific folders mode: Creating flat ZIP structure..."
               
               # Check if directory has any content
@@ -195,15 +185,27 @@ jobs:
               echo "Contents to zip:"
               ls -la "output/$BUNDLE_NAME"
               
+              # Copy history file into bundle dir so it lands at zip root alongside other files
+              if [ -f "$COMBO_FILE" ]; then
+                cp "$COMBO_FILE" "output/$BUNDLE_NAME/"
+                echo "✓ History file included at zip root"
+              fi
+              
               # Zip contents at root level using find (flat structure)
               cd "output/$BUNDLE_NAME"
               find . -mindepth 1 -print | zip -r@ "../../$ZIP_FILE"
               cd ../..
               echo "✓ Created flat structure: $ZIP_FILE"
             else
-              # NORMAL MODE: Zip the entire bundle directory
-              echo "Normal mode: Creating standard ZIP structure..."
-              cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
+              # NORMAL MODE: Zip bundle folder + history file at the same level
+              # Structure inside zip: stringed_bundle_138/ + COMBINATION_HISTORY_138.txt
+              echo "Normal mode: Creating ZIP with history file alongside bundle folder..."
+              cd output
+              zip -r "../$ZIP_FILE" "$BUNDLE_NAME"
+              if [ -f "COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt" ]; then
+                zip "../$ZIP_FILE" "COMBINATION_HISTORY_${{ env.BUNDLE_SEQ }}.txt"
+                echo "✓ History file added alongside bundle folder"
+              fi
               cd ..
               echo "✓ Created: $ZIP_FILE"
             fi
