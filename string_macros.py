@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.18.22 - Cumulative: all v3.17.x fixes merged + v3.18.x features
+string_macros.py - v3.18.25 - Cumulative: all v3.17.x fixes merged + v3.18.x features
 - v3.17.1: Fail-fast sys.exit(1) on bad input/missing folders (was silent return)
 - v3.17.2: PRE-Play buffer bug fix — files_added counter replaces fragile
            "if cycle_events:" guard; fixes buffer skipped for always_first/last.
@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.22"
+VERSION = "v3.18.25"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -1556,27 +1556,16 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
 # STRING PARTS WITH ANTI-DETECTION
 # ============================================================================
 
-def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
+def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
+                 distraction_files=None, distraction_chance=0.0):
     """
     String one complete cycle (F1 → F2 → F3 → ...) into a single unit.
     Returns raw events WITHOUT anti-detection features.
     Features will be applied to the ENTIRE cycle after.
-    
-    Args:
-        subfolder_files: Dict of {folder_num: {'files': [...], 'is_optional': bool, 
-                                               'always_first': Path, 'always_last': Path}}
-        combination: List of (folder_num, file_path) tuples
-        rng: Random generator
-        dmwm_file_set: Set of unmodified file paths
-    
-    Returns:
-        Dict with keys:
-            'events': cycle_events (list)
-            'file_info': file_info_list [(folder_num, filename, is_dmwm, end_time_within_cycle), ...]
-            'has_dmwm': True if any dmwm file in cycle
-            'pre_pause_total': Total pre-file pause time (ms)
-            'post_pause_total': Total post-pause delay time (ms)
-            'transition_total': Total cursor transition time (ms)
+
+    distraction_files: list of Path objects for generated distraction JSONs.
+    distraction_chance: float in [0,1] — probability of inserting one distraction
+                        file between each pair of folder transitions.
     """
     
     def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
@@ -1714,10 +1703,10 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
             add_file_to_cycle(single_always_first, only_folder_num, is_dmwm,
                               f"[ALWAYS FIRST] {single_always_first.name}")
     
-    for folder_num, file_path in combination:
+    for idx_combo, (folder_num, file_path) in enumerate(combination):
         # Get folder data
         folder_data = subfolder_files.get(folder_num, {})
-        
+
         if single_subfolder:
             # Single-subfolder mode: skip per-iteration always_first/last;
             # they are handled once above (first) and below (last).
@@ -1726,22 +1715,33 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
         else:
             # Multi-subfolder mode: always_first/last wrap every selected file
             # (original behaviour — preserves sequence correctness across folders)
-            
+
             # FIRST: Play "always first" if it exists
             always_first = folder_data.get('always_first')
             if always_first:
                 is_dmwm = always_first in dmwm_file_set
                 add_file_to_cycle(always_first, folder_num, is_dmwm, f"[ALWAYS FIRST] {always_first.name}")
-            
+
             # SECOND: Play the selected file
             is_dmwm = file_path in dmwm_file_set
             add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
-            
+
             # THIRD: Play "always last" if it exists
             always_last = folder_data.get('always_last')
             if always_last:
                 is_dmwm = always_last in dmwm_file_set
                 add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
+
+        # DISTRACTION INSERTION: after this folder's files, before next folder,
+        # roll the per-folder chance (7–14%, random decimal, float ms).
+        # Only insert between transitions, not after the very last folder.
+        is_last_folder = (idx_combo == len(combination) - 1)
+        if (not is_last_folder
+                and distraction_files
+                and distraction_chance > 0.0
+                and rng.random() < distraction_chance):
+            dist_path = rng.choice(distraction_files)
+            add_file_to_cycle(dist_path, folder_num, False, f"[DISTRACTION] {dist_path.name}")
     
     if single_subfolder and single_always_last:
         # Play always_last once after everything
@@ -1916,6 +1916,117 @@ def _add_key_spam(events, timeline, rng, cur_x, cur_y):
     return t
 
 
+def _add_shape_movement(events, timeline, rng, cur_x, cur_y):
+    """
+    Trace a geometric shape: circle/donut (3-5 laps), triangle, square,
+    rectangle, or star. Each shape has per-point jitter and varied speed
+    so it reads human, not robotic.
+
+    Returns (new_timeline, new_x, new_y).
+    """
+    shape = rng.choice(['circle', 'triangle', 'square', 'rectangle', 'star'])
+    t     = timeline + _safe_gap(rng)
+
+    # Speed factor: how long each segment between waypoints takes (ms).
+    # Drawn once per shape so the whole shape is consistently fast or slow.
+    ms_per_seg = rng.uniform(80.0, 400.0)   # fast (~80ms) to leisurely (~400ms)
+    jitter_px  = rng.uniform(3.0, 10.0)     # positional jitter magnitude
+
+    def _trace_waypoints(wpts):
+        """Move through a list of (x, y) waypoints with jitter and human paths."""
+        nonlocal t, cur_x, cur_y
+        px, py = cur_x, cur_y
+        for wx, wy in wpts:
+            # Jitter: slightly randomise each target point
+            wx = int(max(100, min(1800, wx + rng.uniform(-jitter_px, jitter_px))))
+            wy = int(max(100, min(1000, wy + rng.uniform(-jitter_px, jitter_px))))
+            # Per-segment time varies ±40% for natural rhythm
+            seg = ms_per_seg * rng.uniform(0.6, 1.4)
+            path = generate_human_path(px, py, wx, wy, int(seg), rng)
+            for rel, ex, ey in path:
+                events.append(_evt('MouseMove', t + rel, ex, ey))
+            t  += seg
+            px, py = wx, wy
+        return px, py
+
+    # ------------------------------------------------------------------ circle
+    if shape == 'circle':
+        radius = rng.randint(60, 180)
+        # Keep center so shape stays fully on screen
+        cx = int(max(100 + radius, min(1800 - radius, cur_x + rng.randint(-120, 120))))
+        cy = int(max(100 + radius, min(1000 - radius, cur_y + rng.randint(-100, 100))))
+        laps   = rng.randint(3, 5)
+        steps  = rng.randint(20, 36)   # points per lap (10–18 degree increments)
+        wpts   = []
+        for lap in range(laps):
+            for s in range(steps):
+                angle = (s / steps) * 2 * math.pi
+                wpts.append((
+                    cx + radius * math.cos(angle),
+                    cy + radius * math.sin(angle),
+                ))
+        last_x, last_y = _trace_waypoints(wpts)
+
+    # --------------------------------------------------------------- triangle
+    elif shape == 'triangle':
+        spread = rng.randint(80, 220)
+        # Generate 3 vertices roughly equilateral around current position
+        vertices = []
+        for k in range(3):
+            angle = (k / 3) * 2 * math.pi + rng.uniform(-0.3, 0.3)
+            vx = cur_x + spread * math.cos(angle)
+            vy = cur_y + spread * math.sin(angle)
+            vertices.append((vx, vy))
+        laps = rng.randint(1, 3)
+        wpts = vertices * laps + [vertices[0]]   # close the last lap
+        last_x, last_y = _trace_waypoints(wpts)
+
+    # ----------------------------------------------------------------- square
+    elif shape == 'square':
+        side = rng.randint(80, 200)
+        x0   = int(max(100, min(1800 - side, cur_x - side // 2)))
+        y0   = int(max(100, min(1000 - side, cur_y - side // 2)))
+        corners = [(x0, y0), (x0 + side, y0),
+                   (x0 + side, y0 + side), (x0, y0 + side)]
+        laps = rng.randint(1, 3)
+        wpts = corners * laps + [corners[0]]
+        last_x, last_y = _trace_waypoints(wpts)
+
+    # -------------------------------------------------------------- rectangle
+    elif shape == 'rectangle':
+        w  = rng.randint(120, 280)
+        h  = rng.randint(60,  160)
+        x0 = int(max(100, min(1800 - w, cur_x - w // 2)))
+        y0 = int(max(100, min(1000 - h, cur_y - h // 2)))
+        corners = [(x0, y0), (x0 + w, y0),
+                   (x0 + w, y0 + h), (x0, y0 + h)]
+        laps = rng.randint(1, 3)
+        wpts = corners * laps + [corners[0]]
+        last_x, last_y = _trace_waypoints(wpts)
+
+    # ------------------------------------------------------------------- star
+    else:   # star
+        outer_r = rng.randint(80, 160)
+        inner_r = int(outer_r * rng.uniform(0.35, 0.55))
+        points  = 5
+        laps    = rng.randint(1, 2)
+        wpts    = []
+        for lap in range(laps):
+            for k in range(points * 2):
+                # Alternate outer/inner radius
+                r     = outer_r if k % 2 == 0 else inner_r
+                angle = (k / (points * 2)) * 2 * math.pi - math.pi / 2
+                wpts.append((
+                    cur_x + r * math.cos(angle),
+                    cur_y + r * math.sin(angle),
+                ))
+        wpts.append(wpts[0])   # close shape
+        last_x, last_y = _trace_waypoints(wpts)
+
+    return t, int(last_x), int(last_y)
+
+
+
 def generate_distraction_files(distractions_src_folder, out_folder, rng,
                                 count: int = 50,
                                 bundle_id: int = 0) -> int:
@@ -1934,12 +2045,14 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
     out_folder = _Path(out_folder)
     out_folder.mkdir(parents=True, exist_ok=True)
 
+    # 6 features — each file picks 3 at random.
     ACTION_WEIGHTS = [
-        ('wander',      22),
-        ('pause',       18),
-        ('right_click', 25),
-        ('type',        22),
-        ('key_spam',    13),
+        ('wander',      20),
+        ('pause',       15),
+        ('right_click', 22),
+        ('type',        20),
+        ('key_spam',    12),
+        ('shapes',      21),
     ]
     action_names = [a[0] for a in ACTION_WEIGHTS]
     action_wts   = [a[1] for a in ACTION_WEIGHTS]
@@ -2025,27 +2138,9 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
                 timeline = _add_typing(events, timeline, file_rng, cur_x, cur_y)
             elif action == 'key_spam':
                 timeline = _add_key_spam(events, timeline, file_rng, cur_x, cur_y)
+            elif action == 'shapes':
+                timeline, cur_x, cur_y = _add_shape_movement(events, timeline, file_rng, cur_x, cur_y)
 
-            action_busy_until = timeline
-
-            # Draw a fresh shared cooldown after every trigger (float ms, never rounded)
-            cooldown = file_rng.uniform(17000.0, 30000.0)
-            next_allowed_any = timeline + cooldown
-
-            last_act = action
-            if timeline <= 0:
-                timeline = 1.0
-                timeline, cur_x, cur_y = _add_mouse_wander(events, timeline, file_rng, cur_x, cur_y)
-            elif action == 'pause':
-                timeline, cur_x, cur_y = _add_cursor_pause(events, timeline, file_rng, cur_x, cur_y)
-            elif action == 'right_click':
-                timeline, cur_x, cur_y = _add_right_click(events, timeline, file_rng, cur_x, cur_y)
-            elif action == 'type':
-                timeline = _add_typing(events, timeline, file_rng, cur_x, cur_y)
-            elif action == 'key_spam':
-                timeline = _add_key_spam(events, timeline, file_rng, cur_x, cur_y)
-
-            # Record when this action's events end (for sequential enforcement)
             action_busy_until = timeline
 
             # Draw a fresh shared cooldown after every trigger (float ms, never rounded)
@@ -2545,6 +2640,11 @@ def main():
     for folder in search_base.iterdir():
         if not folder.is_dir():
             continue
+
+        # Skip the DISTRACTIONS source folder — it is not a macro folder,
+        # only the generated output copy goes into the bundle.
+        if folder.name.lower() == 'distractions':
+            continue
         
         numbered_subfolders, dmwm_file_set, non_json_files = scan_for_numbered_subfolders(folder)
         
@@ -2646,13 +2746,29 @@ def main():
     
     # Track ALL combinations for the bundle (one file at root level)
     bundle_combinations = {}  # {folder_name: [combination_signatures]}
-    
+
+    # Generate DISTRACTIONS now (before folder loop) so files are available
+    # for inline insertion during stringing.
+    dist_out = None
+    distraction_files = []   # list of Path objects to pick from during stringing
+    if distractions_src:
+        print("\n" + "="*70)
+        print("🎭 Generating DISTRACTION files...")
+        dist_out = bundle_dir / f"DISTRACTIONS- {args.bundle_id}"
+        n_written = generate_distraction_files(distractions_src, dist_out, rng, count=50, bundle_id=args.bundle_id)
+        print(f"  ✅ Written {n_written} distraction files → {dist_out.name}/")
+        distraction_files = sorted(dist_out.glob("*.json"))
+
     # Process each folder
     for folder_data in main_folders:
         folder_name = folder_data['name']
         subfolder_files = folder_data['subfolders']
         dmwm_file_set = folder_data['dmwm_files']
         non_json_files = folder_data['non_json']
+
+        # Per-folder distraction insertion chance: 7.0–14.0% (float, never rounded).
+        # Rolled once per folder so every cycle in this folder shares the same rate.
+        folder_distraction_chance = rng.uniform(7.0, 14.0) / 100.0 if distraction_files else 0.0
         
         # D_ REMOVAL
         cleaned_folder_name = re.sub(r'[Dd]_', '', folder_name)
@@ -2839,7 +2955,9 @@ def main():
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
                 cycle_result = string_cycle(
-                    subfolder_files, combo, rng, dmwm_file_set
+                    subfolder_files, combo, rng, dmwm_file_set,
+                    distraction_files=distraction_files,
+                    distraction_chance=folder_distraction_chance
                 )
                 
                 cycle_events = cycle_result['events']
@@ -3128,14 +3246,6 @@ def main():
             print(f"   Total combinations: {total_combos} across {len(bundle_combinations)} folders")
         except Exception as e:
             print(f"\n⚠️  Could not write combination file: {e}")
-    
-    # Generate DISTRACTIONS output folder if activated
-    if distractions_src:
-        print("\n" + "="*70)
-        print("🎭 Generating DISTRACTION files...")
-        dist_out = bundle_dir / f"DISTRACTIONS- {args.bundle_id}"
-        n_written = generate_distraction_files(distractions_src, dist_out, rng, count=50, bundle_id=args.bundle_id)
-        print(f"  ✅ Written {n_written} distraction files → {dist_out.name}/")
     
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
