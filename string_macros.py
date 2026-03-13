@@ -41,7 +41,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.12"
+VERSION = "v3.18.14"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -431,11 +431,20 @@ These features ensure files play correctly without breaking or causing errors.
 
 16. CHAT INSERTS
     Status: ⚙️ OPTIONAL (Disabled by default, --no-chat flag)
-    What: Random chat messages inserted in files
-    Frequency: 50% of files when enabled
-    Default: DISABLED in workflows
-    Purpose: Social presence simulation
-    Code: Line ~1850-1860 (chat insertion - currently bypassed)
+    What: One random chat macro is spliced into exactly one version per folder batch.
+    Behaviour:
+      - Per folder batch: 1 non-raw version is chosen at random to receive chat
+      - That version gets 1 chat file inserted at a random point in its middle third
+      - All other versions in the batch get no chat insert
+      - Raw files are never chosen (they carry no added features)
+      - If no chat files are found in "chat inserts/" folder, nothing happens
+    Chat File Location: <input root>/../chat inserts/*.json
+    Insertion Point: Random index in middle third of finished strung_events
+      After insertion all subsequent event timestamps are shifted forward by
+      the chat file's duration so timing integrity is preserved.
+    Default: DISABLED in workflows (pass --no-chat to disable explicitly)
+    Purpose: Natural social presence — one chat per activity run, unpredictable timing
+    Code: chat_version_idx selection before version loop; splice block before save
 
 17. PRE-PLAY BUFFER GUARANTEE (files_added counter)
     Status: ✅ ACTIVE (Always)
@@ -503,6 +512,41 @@ These features ensure files play correctly without breaking or causing errors.
     Detection: Triggered when zero numbered subfolders are found but JSON files
                exist directly in the folder
     Code: scan_for_numbered_subfolders() — flat folder block at end of function
+
+21. DISTRACTION FILE GENERATION
+    Status: ✅ ACTIVE (If DISTRACTIONS/ folder exists and is non-empty)
+    Added: v3.18.14
+    What: Generates 50 standalone distraction files simulating a player being
+          momentarily distracted — random idle behaviour unrelated to the main
+          activity. The provided trigger file's content is irrelevant; only its
+          presence activates the feature.
+    Activation:
+      • Create a folder named "DISTRACTIONS" (case-insensitive) inside the
+        input_macros root (same level as the numbered activity folders)
+      • Place at least one .json file inside it (acts as the activation trigger)
+      • If the folder is absent or empty, the feature is silently skipped
+    Output:
+      • 50 files written to DISTRACTIONS/ inside the bundle output folder
+      • Filenames: DISTRACTION_01_2m14s.json, DISTRACTION_02_1m47s.json, ...
+    Per-file duration: random float between 1–3 minutes (rng.uniform, never rounded)
+    Per-file contents (randomly weighted):
+      • CURSOR WANDER (35%) — smooth human-path movements to random coordinates
+      • CURSOR PAUSE  (25%) — stay still with optional tiny drift
+      • RIGHT CLICK   (15%) — RightDown + RightUp at random position
+                               NO left clicks ever
+      • TYPING        (15%) — type a random word/phrase, pause, then erase it
+                               with Backspace (varying character speeds 80–200ms)
+      • KEY SPAM      (10%) — accidentally spam a random key 2–8 times,
+                               pause (player notices), then Backspace to erase
+                               (varying speeds 30–220ms)
+    Typing details:
+      • Word list: ~40 common gaming chat words ("gg", "brb", "nice", "lol", ...)
+      • KeyDown/KeyUp pairs for every character including Backspace erasing
+      • All keystroke timings are rng.uniform floats in human range
+    Each of the 50 files uses its own sub-RNG seed (rng.random()) for
+    fully independent randomisation.
+    Code: generate_distraction_files() + helper _add_* functions;
+          DISTRACTIONS scan in main()
 
 20. FILE TRANSITION START GAP PROTECTION
     Status: ✅ ACTIVE (Always, when positions differ between files)
@@ -1675,6 +1719,266 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set()):
     }
 
 
+# ============================================================================
+# DISTRACTION FILE GENERATION
+# ============================================================================
+
+# Common words / phrases a player might idly type then delete
+_DISTRACTION_WORDS = [
+    "nice", "lol", "gg", "hey", "ok", "sure", "brb", "back", "sec",
+    "wait", "hold on", "one sec", "almost", "nearly", "done", "yes",
+    "no", "maybe", "idk", "true", "nah", "yeah", "yep", "nope",
+    "omg", "wow", "damn", "nice one", "good job", "thanks", "ty",
+    "np", "yw", "haha", "lmao", "rofl", "ez", "rip", "oof",
+]
+
+# Keys that players accidentally spam then erase
+_SPAM_KEYS = list("asdfghjklqwertyuiopzxcvbnm/.,;'[]\\-=")
+
+def _human_interval(rng, lo_ms: float, hi_ms: float) -> float:
+    """Return a random float ms in [lo, hi] — never rounded, human-range."""
+    return rng.uniform(lo_ms, hi_ms)
+
+
+def _add_mouse_wander(events: list, timeline: float, rng,
+                      cur_x: int, cur_y: int) -> tuple:
+    """
+    Move cursor around randomly for 1–5 seconds.
+    Returns (new_events_appended, new_timeline, new_x, new_y).
+    """
+    duration = _human_interval(rng, 1000, 5000)
+    end_time = timeline + duration
+
+    x, y = cur_x, cur_y
+    t = timeline
+    while t < end_time:
+        # Pick a new target within screen bounds
+        tx = rng.randint(150, 950)
+        ty = rng.randint(120, 620)
+        seg_dur = _human_interval(rng, 200, 1200)
+        path = generate_human_path(x, y, tx, ty, int(seg_dur), rng)
+        for rel, px, py in path:
+            events.append({'Type': 'MouseMove', 'Time': t + rel, 'X': px, 'Y': py})
+        t += seg_dur
+        x, y = tx, ty
+        # Small random pause between movements
+        t += _human_interval(rng, 50, 600)
+
+    return t, x, y
+
+
+def _add_cursor_pause(events: list, timeline: float, rng,
+                      cur_x: int, cur_y: int) -> tuple:
+    """
+    Stay still (or drift slightly) for 0.5–4 seconds.
+    Returns (new_timeline, cur_x, cur_y).
+    """
+    duration = _human_interval(rng, 500, 4000)
+    # Occasional tiny drift — 40% chance
+    if rng.random() < 0.4:
+        drift_x = cur_x + rng.randint(-8, 8)
+        drift_y = cur_y + rng.randint(-8, 8)
+        drift_x = max(100, min(1800, drift_x))
+        drift_y = max(100, min(1000, drift_y))
+        mid = timeline + duration * rng.uniform(0.3, 0.7)
+        events.append({'Type': 'MouseMove', 'Time': mid, 'X': drift_x, 'Y': drift_y})
+        events.append({'Type': 'MouseMove', 'Time': timeline + duration,
+                        'X': cur_x, 'Y': cur_y})
+    return timeline + duration, cur_x, cur_y
+
+
+def _add_right_click(events: list, timeline: float, rng,
+                     cur_x: int, cur_y: int) -> tuple:
+    """
+    Right-click at current or a random nearby position.
+    Returns (new_timeline, new_x, new_y).
+    """
+    # Sometimes move to a new spot first
+    if rng.random() < 0.5:
+        tx = cur_x + rng.randint(-80, 80)
+        ty = cur_y + rng.randint(-60, 60)
+        tx = max(100, min(1800, tx))
+        ty = max(100, min(1000, ty))
+        move_dur = _human_interval(rng, 200, 700)
+        path = generate_human_path(cur_x, cur_y, tx, ty, int(move_dur), rng)
+        for rel, px, py in path:
+            events.append({'Type': 'MouseMove', 'Time': timeline + rel, 'X': px, 'Y': py})
+        timeline += move_dur
+        cur_x, cur_y = tx, ty
+
+    # RightDown → brief hold → RightUp
+    hold = _human_interval(rng, 60, 250)
+    events.append({'Type': 'RightDown', 'Time': timeline, 'X': cur_x, 'Y': cur_y})
+    events.append({'Type': 'RightUp',   'Time': timeline + hold, 'X': cur_x, 'Y': cur_y})
+    timeline += hold
+
+    # Brief post-click pause
+    timeline += _human_interval(rng, 100, 500)
+    return timeline, cur_x, cur_y
+
+
+def _add_typing(events: list, timeline: float, rng) -> float:
+    """
+    Type a random word/phrase then erase it character by character.
+    Returns new_timeline.
+    """
+    word = rng.choice(_DISTRACTION_WORDS)
+
+    # Type each character
+    for ch in word:
+        key_hold = _human_interval(rng, 60, 140)
+        events.append({'Type': 'KeyDown', 'Time': timeline,
+                        'X': None, 'Y': None, 'KeyCode': ch})
+        events.append({'Type': 'KeyUp',   'Time': timeline + key_hold,
+                        'X': None, 'Y': None, 'KeyCode': ch})
+        timeline += key_hold + _human_interval(rng, 80, 200)
+
+    # Brief pause before erasing (0–2 seconds — sometimes they hesitate)
+    timeline += _human_interval(rng, 0, 2000)
+
+    # Erase each character with Backspace
+    for _ in word:
+        key_hold = _human_interval(rng, 60, 150)
+        events.append({'Type': 'KeyDown', 'Time': timeline,
+                        'X': None, 'Y': None, 'KeyCode': 'Back'})
+        events.append({'Type': 'KeyUp',   'Time': timeline + key_hold,
+                        'X': None, 'Y': None, 'KeyCode': 'Back'})
+        timeline += key_hold + _human_interval(rng, 70, 190)
+
+    return timeline
+
+
+def _add_key_spam(events: list, timeline: float, rng) -> float:
+    """
+    Accidentally hold / spam a random key 2–8 times, then erase with Backspace.
+    Returns new_timeline.
+    """
+    key = rng.choice(_SPAM_KEYS)
+    count = rng.randint(2, 8)
+
+    # Spam phase — vary speed to mimic holding a key
+    for _ in range(count):
+        key_hold = _human_interval(rng, 40, 120)
+        events.append({'Type': 'KeyDown', 'Time': timeline,
+                        'X': None, 'Y': None, 'KeyCode': key})
+        events.append({'Type': 'KeyUp',   'Time': timeline + key_hold,
+                        'X': None, 'Y': None, 'KeyCode': key})
+        timeline += key_hold + _human_interval(rng, 30, 90)
+
+    # "Oh no" pause — player notices the spam
+    timeline += _human_interval(rng, 200, 1200)
+
+    # Erase each spammed char
+    for _ in range(count):
+        key_hold = _human_interval(rng, 60, 150)
+        events.append({'Type': 'KeyDown', 'Time': timeline,
+                        'X': None, 'Y': None, 'KeyCode': 'Back'})
+        events.append({'Type': 'KeyUp',   'Time': timeline + key_hold,
+                        'X': None, 'Y': None, 'KeyCode': 'Back'})
+        timeline += key_hold + _human_interval(rng, 70, 160)
+
+    return timeline
+
+
+def generate_distraction_files(distractions_src_folder: Path,
+                                out_folder: Path,
+                                rng,
+                                count: int = 50) -> int:
+    """
+    Generate `count` distraction JSON files into out_folder.
+
+    Each file:
+      • Duration: random 1–3 minutes (ms-precise, never rounded)
+      • Contents: random cursor wanders, pauses, right-clicks, typing, key-spam
+      • NO left clicks whatsoever
+      • Every timing value is a float chosen by rng.uniform — never int-rounded
+        until the final Time field normalisation step before JSON serialisation.
+
+    Returns number of files actually written.
+    """
+    out_folder.mkdir(parents=True, exist_ok=True)
+
+    # Action weights: (name, weight)
+    ACTION_WEIGHTS = [
+        ('wander',     35),
+        ('pause',      25),
+        ('right_click', 15),
+        ('type',       15),
+        ('key_spam',   10),
+    ]
+    action_names  = [a[0] for a in ACTION_WEIGHTS]
+    action_wts    = [a[1] for a in ACTION_WEIGHTS]
+
+    written = 0
+    for i in range(count):
+        # Each file gets its own sub-seed for independence
+        file_rng = random.Random(rng.random())
+
+        target_duration = file_rng.uniform(60000, 180000)  # 1–3 min, float ms
+
+        events = []
+        timeline = 0.0
+        cur_x = file_rng.randint(300, 700)
+        cur_y = file_rng.randint(250, 450)
+
+        # Opening cursor move to random start position
+        tx = file_rng.randint(150, 950)
+        ty = file_rng.randint(120, 620)
+        open_dur = _human_interval(file_rng, 300, 900)
+        path = generate_human_path(cur_x, cur_y, tx, ty, int(open_dur), file_rng)
+        for rel, px, py in path:
+            events.append({'Type': 'MouseMove', 'Time': timeline + rel, 'X': px, 'Y': py})
+        timeline += open_dur
+        cur_x, cur_y = tx, ty
+
+        while timeline < target_duration:
+            action = file_rng.choices(action_names, weights=action_wts, k=1)[0]
+
+            if action == 'wander':
+                timeline, cur_x, cur_y = _add_mouse_wander(
+                    events, timeline, file_rng, cur_x, cur_y)
+
+            elif action == 'pause':
+                timeline, cur_x, cur_y = _add_cursor_pause(
+                    events, timeline, file_rng, cur_x, cur_y)
+
+            elif action == 'right_click':
+                timeline, cur_x, cur_y = _add_right_click(
+                    events, timeline, file_rng, cur_x, cur_y)
+
+            elif action == 'type':
+                timeline = _add_typing(events, timeline, file_rng)
+
+            elif action == 'key_spam':
+                timeline = _add_key_spam(events, timeline, file_rng)
+
+            # Safety: never infinite-loop on degenerate durations
+            if timeline <= 0:
+                timeline = 1.0
+
+        if not events:
+            continue
+
+        # Normalise: shift so first event is at 0, keep float precision,
+        # then round to int only for final JSON output
+        base = min(e['Time'] for e in events)
+        for e in events:
+            e['Time'] = max(0, int(round(e['Time'] - base)))
+
+        events = sorted(events, key=lambda e: e.get('Time', 0))
+
+        total_ms   = events[-1]['Time']
+        total_min  = total_ms // 60000
+        total_sec  = (total_ms % 60000) // 1000
+        idx_str    = str(i + 1).zfill(2)
+        fname      = f"DISTRACTION_{idx_str}_{total_min}m{total_sec}s.json"
+
+        (out_folder / fname).write_text(json.dumps(events, indent=2))
+        written += 1
+
+    return written
+
+
 def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm):
     """
     Apply anti-detection features to a complete cycle.
@@ -2097,6 +2401,31 @@ def main():
             if chat_files:
                 print(f"✓ Found {len(chat_files)} chat insert files")
     
+    # Scan for DISTRACTIONS folder (same level as main input folders)
+    distractions_src = None
+    for candidate in [search_base / "DISTRACTIONS",
+                       search_base / "distractions",
+                       search_base / "Distractions"]:
+        if candidate.exists() and candidate.is_dir():
+            distractions_src = candidate
+            break
+    if distractions_src is None:
+        # Also check parent level
+        for candidate in [search_base.parent / "DISTRACTIONS",
+                           search_base.parent / "distractions"]:
+            if candidate.exists() and candidate.is_dir():
+                distractions_src = candidate
+                break
+    if distractions_src:
+        trigger_files = list(distractions_src.glob("*.json"))
+        if trigger_files:
+            print(f"✓ DISTRACTIONS folder found: {distractions_src.name} ({len(trigger_files)} trigger file(s)) — 50 files will be generated")
+        else:
+            print(f"  DISTRACTIONS folder found but empty — feature disabled")
+            distractions_src = None
+    else:
+        print(f"  No DISTRACTIONS folder found — distraction generation disabled")
+    
     # Look for logout file
     logout_file = None
     logout_patterns = ["logout.json", "- logout.json", "-logout.json", "logout", "- logout", "-logout"]
@@ -2343,6 +2672,19 @@ def main():
             num_normal = 6
             print(f"  📊 File distribution: 3 Raw + 3 Inef + 6 Normal (standard)")
         
+        # CHAT INSERT: pick exactly 1 non-raw version per folder batch to receive
+        # a single chat file inserted at a random midpoint in the finished strung file.
+        # Raw files never get chat (they carry no added features).
+        chat_version_idx = None
+        chat_file_for_version = None
+        if chat_files and not args.no_chat:
+            non_raw_indices = list(range(num_raw, args.versions))
+            if non_raw_indices:
+                chat_version_idx = rng.choice(non_raw_indices)
+                chat_file_for_version = rng.choice(chat_files)
+                cv_letter = get_version_letter(chat_version_idx)
+                print(f"  💬 Chat insert: version {cv_letter} will receive 1 chat ({chat_file_for_version.name})")
+        
         for v_idx in range(args.versions):
             v_letter = get_version_letter(v_idx)
             
@@ -2541,12 +2883,57 @@ def main():
                     e['Time'] = max(0, int(round(e['Time'])))
             stringed_events = sorted(stringed_events, key=lambda e: e.get('Time', 0))
             
+            # CHAT INSERT: splice one chat file into the chosen version
+            chat_inserted = False
+            if v_idx == chat_version_idx and chat_file_for_version and not is_raw:
+                try:
+                    with open(chat_file_for_version, 'r', encoding='utf-8') as cf:
+                        chat_events = json.load(cf)
+                    if chat_events:
+                        # Normalise chat event times to start at 0
+                        chat_base = min(e.get('Time', 0) for e in chat_events)
+                        chat_duration = max(e.get('Time', 0) for e in chat_events) - chat_base
+                        
+                        # Pick a random insertion point in the middle third of the file
+                        if len(stringed_events) >= 6:
+                            lo = len(stringed_events) // 3
+                            hi = (2 * len(stringed_events)) // 3
+                            insert_idx = rng.randint(lo, hi)
+                        else:
+                            insert_idx = len(stringed_events) // 2
+                        
+                        insert_time = stringed_events[insert_idx]['Time']
+                        
+                        # Shift all events after insertion point forward by chat duration
+                        for e in stringed_events[insert_idx:]:
+                            e['Time'] += chat_duration
+                        
+                        # Build chat events at insert_time
+                        chat_splice = []
+                        for e in chat_events:
+                            ne = {**e}
+                            ne['Time'] = insert_time + (e.get('Time', 0) - chat_base)
+                            chat_splice.append(ne)
+                        
+                        # Splice in and re-sort
+                        stringed_events = (
+                            stringed_events[:insert_idx] +
+                            chat_splice +
+                            stringed_events[insert_idx:]
+                        )
+                        stringed_events = sorted(stringed_events, key=lambda e: e.get('Time', 0))
+                        chat_inserted = True
+                        print(f"     💬 Chat inserted: {chat_file_for_version.name} at ~{insert_time//60000}m{(insert_time%60000)//1000}s")
+                except Exception as chat_err:
+                    print(f"     ⚠️  Chat insert failed: {chat_err}")
+            
             # Save file
             (out_folder / fname).write_text(json.dumps(stringed_events, indent=2))
             
             # DEBUG: Show created file
             type_label = "RAW" if is_raw else ("INEF" if is_inef else "NORM")
-            print(f"     ✓ Created: {fname:<30s} [{type_label}]")
+            chat_tag = " +CHAT" if chat_inserted else ""
+            print(f"     ✓ Created: {fname:<30s} [{type_label}{chat_tag}]")
             
             # Build manifest entry
             separator = "=" * 40
@@ -2643,6 +3030,14 @@ def main():
             print(f"   Total combinations: {total_combos} across {len(bundle_combinations)} folders")
         except Exception as e:
             print(f"\n⚠️  Could not write combination file: {e}")
+    
+    # Generate DISTRACTIONS output folder if activated
+    if distractions_src:
+        print("\n" + "="*70)
+        print("🎭 Generating DISTRACTION files...")
+        dist_out = bundle_dir / "DISTRACTIONS"
+        n_written = generate_distraction_files(distractions_src, dist_out, rng, count=50)
+        print(f"  ✅ Written {n_written} distraction files → {dist_out.name}/")
     
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
