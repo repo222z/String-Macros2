@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.18.26 - Cumulative: all v3.17.x fixes merged + v3.18.x features
+string_macros.py - v3.18.28 - Cumulative: all v3.17.x fixes merged + v3.18.x features
 - v3.17.1: Fail-fast sys.exit(1) on bad input/missing folders (was silent return)
 - v3.17.2: PRE-Play buffer bug fix — files_added counter replaces fragile
            "if cycle_events:" guard; fixes buffer skipped for always_first/last.
@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.26"
+VERSION = "v3.18.28"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -1713,48 +1713,45 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
             add_file_to_cycle(single_always_first, only_folder_num, is_dmwm,
                               f"[ALWAYS FIRST] {single_always_first.name}")
     
+    def _maybe_insert_distraction(cur_folder_num):
+        """Roll the chance and insert one distraction file at the current timeline."""
+        nonlocal total_distraction_pause
+        if not distraction_files or distraction_chance <= 0.0:
+            return
+        if rng.random() < distraction_chance:
+            dist_path = rng.choice(distraction_files)
+            t_before  = timeline
+            add_file_to_cycle(dist_path, cur_folder_num, False,
+                               f"[DISTRACTION] {dist_path.name}")
+            total_distraction_pause += (timeline - t_before)
+
     for idx_combo, (folder_num, file_path) in enumerate(combination):
-        # Get folder data
         folder_data = subfolder_files.get(folder_num, {})
 
+        # DISTRACTION: maybe insert BEFORE this folder's files
+        _maybe_insert_distraction(folder_num)
+
         if single_subfolder:
-            # Single-subfolder mode: skip per-iteration always_first/last;
-            # they are handled once above (first) and below (last).
             is_dmwm = file_path in dmwm_file_set
             add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
         else:
-            # Multi-subfolder mode: always_first/last wrap every selected file
-            # (original behaviour — preserves sequence correctness across folders)
-
-            # FIRST: Play "always first" if it exists
             always_first = folder_data.get('always_first')
             if always_first:
                 is_dmwm = always_first in dmwm_file_set
-                add_file_to_cycle(always_first, folder_num, is_dmwm, f"[ALWAYS FIRST] {always_first.name}")
-
-            # SECOND: Play the selected file
+                add_file_to_cycle(always_first, folder_num, is_dmwm,
+                                   f"[ALWAYS FIRST] {always_first.name}")
             is_dmwm = file_path in dmwm_file_set
             add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
-
-            # THIRD: Play "always last" if it exists
             always_last = folder_data.get('always_last')
             if always_last:
                 is_dmwm = always_last in dmwm_file_set
-                add_file_to_cycle(always_last, folder_num, is_dmwm, f"[ALWAYS LAST] {always_last.name}")
+                add_file_to_cycle(always_last, folder_num, is_dmwm,
+                                   f"[ALWAYS LAST] {always_last.name}")
 
-        # DISTRACTION INSERTION: after this folder's files, before next folder,
-        # roll the per-folder chance (7–14%, random decimal, float ms).
-        # Only insert between transitions, not after the very last folder.
-        # Never inserted for raw or inefficient versions (handled by caller passing chance=0).
-        is_last_folder = (idx_combo == len(combination) - 1)
-        if (not is_last_folder
-                and distraction_files
-                and distraction_chance > 0.0
-                and rng.random() < distraction_chance):
-            dist_path = rng.choice(distraction_files)
-            t_before_dist = timeline
-            add_file_to_cycle(dist_path, folder_num, False, f"[DISTRACTION] {dist_path.name}")
-            total_distraction_pause += (timeline - t_before_dist)
+    # DISTRACTION: maybe insert AFTER the very last folder
+    if combination:
+        last_folder_num = combination[-1][0]
+        _maybe_insert_distraction(last_folder_num)
 
     if single_subfolder and single_always_last:
         # Play always_last once after everything
@@ -2138,7 +2135,7 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
     written = 0
     for i in range(count):
         file_rng = random.Random(rng.random())
-        target   = file_rng.uniform(60000.0, 180000.0)
+        target   = file_rng.uniform(30000.0, 120000.0)
 
         # Pick exactly 3 features for this file
         chosen     = file_rng.sample(action_names, 3)
@@ -2240,6 +2237,25 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
         for j in range(1, len(events)):
             if events[j]['Time'] <= events[j-1]['Time']:
                 events[j]['Time'] = events[j-1]['Time'] + 1
+
+        # Trim any events that spilled past target due to cooldown overshoot.
+        target_ms_int = int(round(target))
+        events = [e for e in events if e['Time'] <= target_ms_int]
+        if not events:
+            continue
+
+        # Ensure the file's duration matches its target (within 1s tolerance).
+        # Cursor idle time during cooldown gaps produces no events, so the last
+        # event may land well before target. A final anchor MouseMove captures
+        # "cursor held still" and gives the file the correct playback length.
+        if events[-1]['Time'] < target_ms_int - 1000:
+            last_x = next((e['X'] for e in reversed(events) if e.get('X') is not None), cur_x)
+            last_y = next((e['Y'] for e in reversed(events) if e.get('Y') is not None), cur_y)
+            events.append({
+                'Type': 'MouseMove', 'Time': target_ms_int,
+                'X': int(last_x), 'Y': int(last_y),
+                'Delta': None, 'KeyCode': None,
+            })
 
         total_ms  = events[-1]['Time']
         total_min = total_ms // 60000
@@ -2672,8 +2688,13 @@ def main():
             if chat_files:
                 print(f"✓ Found {len(chat_files)} chat insert files")
     
-    # Scan for DISTRACTIONS folder (same level as main input folders)
+    # Scan for DISTRACTIONS trigger — accepts either:
+    #   A) A folder named "DISTRACTIONS" (case-insensitive) containing ≥1 .json
+    #   B) A single file named "distraction_file.json" (or similar) at root level
+    # Either presence activates the feature; the trigger content is irrelevant.
     distractions_src = None
+
+    # Option A: folder-based trigger (original behaviour)
     for candidate in [search_base / "DISTRACTIONS",
                        search_base / "distractions",
                        search_base / "Distractions"]:
@@ -2681,21 +2702,36 @@ def main():
             distractions_src = candidate
             break
     if distractions_src is None:
-        # Also check parent level
         for candidate in [search_base.parent / "DISTRACTIONS",
                            search_base.parent / "distractions"]:
             if candidate.exists() and candidate.is_dir():
                 distractions_src = candidate
                 break
+
+    # Option B: single trigger file at root level
+    # Any .json file whose name contains "distraction" (case-insensitive) works
+    if distractions_src is None:
+        for candidate_dir in [search_base, search_base.parent]:
+            for f in candidate_dir.glob("*.json"):
+                if "distraction" in f.name.lower():
+                    distractions_src = f.parent   # treat parent as the trigger dir
+                    break
+            if distractions_src:
+                break
+
     if distractions_src:
-        trigger_files = list(distractions_src.glob("*.json"))
+        trigger_files = list(distractions_src.glob("*.json")) if distractions_src.is_dir() else []
+        if not distractions_src.is_dir():
+            # single-file trigger: src is the parent folder, just confirm the file is there
+            trigger_files = [f for f in distractions_src.iterdir()
+                             if f.suffix == '.json' and 'distraction' in f.name.lower()]
         if trigger_files:
-            print(f"✓ DISTRACTIONS folder found: {distractions_src.name} ({len(trigger_files)} trigger file(s)) — 50 files will be generated")
+            print(f"✓ Distraction trigger found — 50 distraction files will be generated")
         else:
-            print(f"  DISTRACTIONS folder found but empty — feature disabled")
+            print(f"  Distraction trigger found but empty — feature disabled")
             distractions_src = None
     else:
-        print(f"  No DISTRACTIONS folder found — distraction generation disabled")
+        print(f"  No distraction trigger found — distraction generation disabled")
     
     # Look for logout file
     logout_file = None
@@ -2848,9 +2884,12 @@ def main():
         dmwm_file_set = folder_data['dmwm_files']
         non_json_files = folder_data['non_json']
 
-        # Per-folder distraction insertion chance: 7.0–14.0% (float, never rounded).
-        # Rolled once per folder so every cycle in this folder shares the same rate.
-        folder_distraction_chance = rng.uniform(7.0, 14.0) / 100.0 if distraction_files else 0.0
+        # Per-folder distraction insertion chances (float decimal, drawn once per folder):
+        # - Normal files:      7.0–10.0%  (tighter window, more controlled)
+        # - Inefficient files: 7.0–14.0%  (wider window, more varied)
+        # - Raw files:         0%          (never)
+        folder_dist_chance_normal = rng.uniform(7.0, 10.0) / 100.0 if distraction_files else 0.0
+        folder_dist_chance_inef   = rng.uniform(7.0, 14.0) / 100.0 if distraction_files else 0.0
         
         # D_ REMOVAL
         cleaned_folder_name = re.sub(r'[Dd]_', '', folder_name)
@@ -3037,8 +3076,13 @@ def main():
                 folder_combinations_used.append(combo_signature)
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
-                # Distractions only inserted into NORMAL files — never raw or inefficient
-                cycle_dist_chance = folder_distraction_chance if (not is_raw and not is_inef) else 0.0
+                # Distractions: Normal and Inefficient get their own chance rates; Raw never gets any
+                if is_raw:
+                    cycle_dist_chance = 0.0
+                elif is_inef:
+                    cycle_dist_chance = folder_dist_chance_inef
+                else:
+                    cycle_dist_chance = folder_dist_chance_normal
                 cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set,
                     distraction_files=distraction_files,
