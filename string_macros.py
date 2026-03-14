@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.18.25 - Cumulative: all v3.17.x fixes merged + v3.18.x features
+string_macros.py - v3.18.26 - Cumulative: all v3.17.x fixes merged + v3.18.x features
 - v3.17.1: Fail-fast sys.exit(1) on bad input/missing folders (was silent return)
 - v3.17.2: PRE-Play buffer bug fix — files_added counter replaces fragile
            "if cycle_events:" guard; fixes buffer skipped for always_first/last.
@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.25"
+VERSION = "v3.18.26"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -537,40 +537,49 @@ These features ensure files play correctly without breaking or causing errors.
                exist directly in the folder
     Code: scan_for_numbered_subfolders() — flat folder block at end of function
 
-21. DISTRACTION FILE GENERATION
+21. DISTRACTION FILE GENERATION + INLINE INSERTION
     Status: ✅ ACTIVE (If DISTRACTIONS/ folder exists and is non-empty)
-    Added: v3.18.14
-    What: Generates 50 standalone distraction files simulating a player being
-          momentarily distracted — random idle behaviour unrelated to the main
-          activity. The provided trigger file's content is irrelevant; only its
-          presence activates the feature.
+    Added: v3.18.14  Updated: v3.18.25
+    What: Generates 50 distraction files simulating a player being momentarily
+          distracted, then splices them randomly between folder transitions
+          during stringing. Files are NOT saved to the bundle output folder —
+          they are held in a temp folder and deleted after stringing completes.
     Activation:
-      • Create a folder named "DISTRACTIONS" (case-insensitive) inside the
-        input_macros root (same level as the numbered activity folders)
-      • Place at least one .json file inside it (acts as the activation trigger)
-      • If the folder is absent or empty, the feature is silently skipped
+      • Place a folder named "DISTRACTIONS" (case-insensitive) inside input_macros/
+      • Place at least one .json file inside it (content irrelevant — just a trigger)
     Output:
-      • 50 files written to DISTRACTIONS/ inside the bundle output folder
-      • Filenames: DISTRACTION_01_2m14s.json, DISTRACTION_02_1m47s.json, ...
-    Per-file duration: random float between 1–3 minutes (rng.uniform, never rounded)
-    Per-file contents (randomly weighted):
-      • CURSOR WANDER (35%) — smooth human-path movements to random coordinates
-      • CURSOR PAUSE  (25%) — stay still with optional tiny drift
-      • RIGHT CLICK   (15%) — RightDown + RightUp at random position
-                               NO left clicks ever
-      • TYPING        (15%) — type a random word/phrase, pause, then erase it
-                               with Backspace (varying character speeds 80–200ms)
-      • KEY SPAM      (10%) — accidentally spam a random key 2–8 times,
-                               pause (player notices), then Backspace to erase
-                               (varying speeds 30–220ms)
-    Typing details:
-      • Word list: ~40 common gaming chat words ("gg", "brb", "nice", "lol", ...)
-      • KeyDown/KeyUp pairs for every character including Backspace erasing
-      • All keystroke timings are rng.uniform floats in human range
-    Each of the 50 files uses its own sub-RNG seed (rng.random()) for
-    fully independent randomisation.
-    Code: generate_distraction_files() + helper _add_* functions;
-          DISTRACTIONS scan in main()
+      • 50 files generated in a temp folder, used for inline insertion, then deleted
+      • Each file uses exactly 3 randomly chosen features from the 6 available
+      • NEVER inserted into Raw or Inefficient versions — Normal only
+    Per-file duration: random float 1–3 min (rng.uniform, never rounded)
+    Insertion:
+      • Per-folder chance: rng.uniform(7.0, 14.0)% (float decimal, once per folder)
+      • Rolled at each folder transition (F1→F2, F2→F3, etc.) within a cycle
+      • Never inserted after the last folder in a cycle
+    6 available distraction features (each file picks 3):
+      • CURSOR WANDER   — 2–7 moves, per-call randomised speed envelope
+      • CURSOR PAUSE    — 0.3–4s, per-call randomised drift probability + magnitude
+      • RIGHT CLICK     — approach + click, per-call randomised offset + hover + hold
+      • TYPING          — type word + erase, per-call randomised speed/hesitation
+      • KEY SPAM        — spam key + erase, per-call randomised speed envelopes
+      • SHAPE MOVEMENT  — circle/triangle/square/rectangle/star with random jitter
+    All timing envelopes (lo/hi bounds) are re-drawn per call so each action
+    invocation has a genuinely different character — not just different values
+    within fixed ranges, but different ranges each time.
+    Manifest: "DISTRACTION File Pause: Xm Xs" in Normal file breakdown
+    Code: generate_distraction_files() + _add_* helpers + string_cycle() insertion
+
+22. SHAPE MOVEMENT (distraction sub-feature)
+    Status: ✅ ACTIVE (as one of 6 distraction features)
+    Added: v3.18.24
+    What: Traces geometric shapes with per-point jitter and randomised speed
+    Shapes: circle/donut (3–5 laps), triangle (1–3 laps), square (1–3 laps),
+            rectangle (1–3 laps), star (1–2 laps)
+    Jitter: per-shape random magnitude rng.uniform(3.0, 10.0) px applied to
+            every waypoint — shape remains recognisable but hand-drawn
+    Speed: ms_per_seg = rng.uniform(80, 400) drawn once per shape, then
+           ±40% per segment for natural rhythm variation
+    Code: _add_shape_movement()
 
 20. FILE TRANSITION START GAP PROTECTION
     Status: ✅ ACTIVE (Always, when positions differ between files)
@@ -1682,10 +1691,11 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
     has_dmwm = False
     
     files_added = 0  # Counts files added; guards pre-play buffer for every non-first file
-    # NEW: Track pre-file pauses, post-pause delays, and cursor transitions
+    # NEW: Track pre-file pauses, post-pause delays, cursor transitions, and distraction durations
     total_pre_pause = 0
     total_post_pause = 0
     total_transition_time = 0
+    total_distraction_pause = 0  # cumulative duration of all inserted distraction files
     
     # SINGLE-SUBFOLDER MODE: if only one subfolder exists, always_first/last
     # should bracket the ENTIRE strung file (once at the very start, once at
@@ -1735,27 +1745,31 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         # DISTRACTION INSERTION: after this folder's files, before next folder,
         # roll the per-folder chance (7–14%, random decimal, float ms).
         # Only insert between transitions, not after the very last folder.
+        # Never inserted for raw or inefficient versions (handled by caller passing chance=0).
         is_last_folder = (idx_combo == len(combination) - 1)
         if (not is_last_folder
                 and distraction_files
                 and distraction_chance > 0.0
                 and rng.random() < distraction_chance):
             dist_path = rng.choice(distraction_files)
+            t_before_dist = timeline
             add_file_to_cycle(dist_path, folder_num, False, f"[DISTRACTION] {dist_path.name}")
-    
+            total_distraction_pause += (timeline - t_before_dist)
+
     if single_subfolder and single_always_last:
         # Play always_last once after everything
         is_dmwm = single_always_last in dmwm_file_set
         add_file_to_cycle(single_always_last, only_folder_num, is_dmwm,
                           f"[ALWAYS LAST] {single_always_last.name}")
-    
+
     return {
         'events': cycle_events,
         'file_info': file_info_list,
         'has_dmwm': has_dmwm,
         'pre_pause_total': total_pre_pause,
         'post_pause_total': total_post_pause,
-        'transition_total': total_transition_time
+        'transition_total': total_transition_time,
+        'distraction_pause_total': total_distraction_pause,
     }
 
 
@@ -1821,98 +1835,162 @@ def _safe_gap(rng) -> float:
 
 
 def _add_mouse_wander(events, timeline, rng, cur_x, cur_y):
-    """Move cursor to 2–5 random destinations. Returns (timeline, x, y)."""
+    """
+    Move cursor to 2–7 random destinations.
+    Per-call: number of moves, speed envelope, and inter-move pause
+    range are all re-randomised so no two wanders feel the same.
+    Returns (timeline, x, y).
+    """
     t = timeline + _safe_gap(rng)
     x, y = cur_x, cur_y
-    for _ in range(rng.randint(2, 5)):
+    # Randomise both envelope bounds so the RANGE of speeds varies per call
+    spd_lo = rng.uniform(150.0, 500.0)
+    spd_hi = rng.uniform(spd_lo + 200.0, spd_lo + 1200.0)
+    gap_lo = rng.uniform(30.0, 150.0)
+    gap_hi = rng.uniform(gap_lo + 100.0, gap_lo + 600.0)
+    n_moves = rng.randint(2, 7)
+    for _ in range(n_moves):
         tx = rng.randint(150, 950)
         ty = rng.randint(120, 620)
-        seg_dur = _human_interval(rng, 300.0, 1400.0)
+        seg_dur = _human_interval(rng, spd_lo, spd_hi)
         path = generate_human_path(x, y, tx, ty, int(seg_dur), rng)
         for rel, px, py in path:
             events.append(_evt('MouseMove', t + rel, px, py))
         t += seg_dur
         x, y = tx, ty
-        t += _human_interval(rng, 80.0, 500.0)
+        t += _human_interval(rng, gap_lo, gap_hi)
     return t, x, y
 
 
 def _add_cursor_pause(events, timeline, rng, cur_x, cur_y):
-    """Stay still (optional drift) for 0.5–2 s. Returns (timeline, x, y)."""
-    duration = _human_interval(rng, 500.0, 2000.0)
+    """
+    Stay still (or drift slightly) for a randomised duration.
+    Drift probability, drift magnitude, and pause length all vary per call.
+    Returns (timeline, x, y).
+    """
+    # Duration envelope randomised per call: 0.3s–4s range, but the actual
+    # bounds shift so some calls are twitchy-short and some are long
+    dur_lo = rng.uniform(300.0, 800.0)
+    dur_hi = rng.uniform(dur_lo + 400.0, dur_lo + 2500.0)
+    duration = _human_interval(rng, dur_lo, dur_hi)
     t_start  = timeline + _safe_gap(rng)
-    if rng.random() < 0.45:
-        dx = max(100, min(1800, cur_x + rng.randint(-10, 10)))
-        dy = max(100, min(1000, cur_y + rng.randint(-10, 10)))
-        mid = t_start + duration * rng.uniform(0.3, 0.7)
+    # Drift: random probability AND random magnitude per call
+    drift_prob = rng.uniform(0.20, 0.65)
+    if rng.random() < drift_prob:
+        drift_mag = rng.randint(3, 18)
+        dx = max(100, min(1800, cur_x + rng.randint(-drift_mag, drift_mag)))
+        dy = max(100, min(1000, cur_y + rng.randint(-drift_mag, drift_mag)))
+        mid = t_start + duration * rng.uniform(0.2, 0.8)
         events.append(_evt('MouseMove', mid,              dx,    dy))
         events.append(_evt('MouseMove', t_start+duration, cur_x, cur_y))
     return t_start + duration, cur_x, cur_y
 
 
 def _add_right_click(events, timeline, rng, cur_x, cur_y):
-    """Approach then right-click. Returns (timeline, x, y)."""
+    """
+    Approach a random nearby position then right-click.
+    Approach speed, offset range, hover time, and hold duration all vary per call.
+    Returns (timeline, x, y).
+    """
     t  = timeline + _safe_gap(rng)
-    tx = max(100, min(1800, cur_x + rng.randint(-120, 120)))
-    ty = max(100, min(1000, cur_y + rng.randint(-80,  80)))
-    move_dur = _human_interval(rng, 200.0, 800.0)
+    # Randomise offset range per call: small twitch vs large repositioning
+    off_x = rng.randint(20, 200)
+    off_y = rng.randint(15, 140)
+    tx = max(100, min(1800, cur_x + rng.randint(-off_x, off_x)))
+    ty = max(100, min(1000, cur_y + rng.randint(-off_y, off_y)))
+    spd_lo = rng.uniform(100.0, 300.0)
+    move_dur = _human_interval(rng, spd_lo, spd_lo + rng.uniform(200.0, 700.0))
     path = generate_human_path(cur_x, cur_y, tx, ty, int(move_dur), rng)
     for rel, px, py in path:
         events.append(_evt('MouseMove', t + rel, px, py))
     t += move_dur
     cur_x, cur_y = tx, ty
-    # Hover before clicking
-    t += _human_interval(rng, 60.0, 200.0)
-    hold = _human_interval(rng, 60.0, 260.0)
+    # Hover time randomised per call
+    t += _human_interval(rng, 30.0, rng.uniform(100.0, 350.0))
+    hold_lo = rng.uniform(40.0, 100.0)
+    hold = _human_interval(rng, hold_lo, hold_lo + rng.uniform(80.0, 250.0))
     events.append(_evt('RightDown', t,        cur_x, cur_y))
     events.append(_evt('RightUp',   t + hold, cur_x, cur_y))
-    t += hold + _human_interval(rng, 150.0, 600.0)
+    # Post-click linger: sometimes brief, sometimes longer
+    t += hold + _human_interval(rng, 80.0, rng.uniform(300.0, 900.0))
     return t, cur_x, cur_y
 
 
 def _add_typing(events, timeline, rng, cur_x, cur_y):
-    """Type a word then erase it. KeyCode = integer VK code, X/Y = None."""
+    """
+    Type a random word then erase it character by character.
+    Typing speed, erasing speed, and hesitation pause all re-randomised
+    per call so every typing event has its own rhythm.
+    KeyCode = integer VK code, X/Y = None.
+    """
     word = rng.choice(_DISTRACTION_WORDS)
     t    = timeline + _safe_gap(rng)
+    # Per-call speed envelopes
+    type_hold_lo = rng.uniform(40.0, 90.0)
+    type_hold_hi = rng.uniform(type_hold_lo + 30.0, type_hold_lo + 120.0)
+    type_gap_lo  = rng.uniform(50.0, 130.0)
+    type_gap_hi  = rng.uniform(type_gap_lo + 40.0, type_gap_lo + 180.0)
+    erase_hold_lo = rng.uniform(40.0, 100.0)
+    erase_hold_hi = rng.uniform(erase_hold_lo + 30.0, erase_hold_lo + 110.0)
+    erase_gap_lo  = rng.uniform(45.0, 110.0)
+    erase_gap_hi  = rng.uniform(erase_gap_lo + 30.0, erase_gap_lo + 140.0)
+    hesitation    = rng.uniform(100.0, rng.uniform(500.0, 3000.0))
+
     for ch in word:
         vk = _VK.get(ch, _VK.get(ch.lower()))
         if vk is None:
-            continue   # skip unmapped chars silently
-        hold = _human_interval(rng, 55.0, 145.0)
+            continue
+        hold = _human_interval(rng, type_hold_lo, type_hold_hi)
         events.append(_evt('KeyDown', t,        keycode=vk))
         events.append(_evt('KeyUp',   t + hold, keycode=vk))
-        t += hold + _human_interval(rng, 75.0, 210.0)
-    # Hesitation before erasing
-    t += _human_interval(rng, 200.0, 2200.0)
+        t += hold + _human_interval(rng, type_gap_lo, type_gap_hi)
+    t += hesitation
     bk = _VK['Back']
     for _ in word:
-        hold = _human_interval(rng, 55.0, 155.0)
+        hold = _human_interval(rng, erase_hold_lo, erase_hold_hi)
         events.append(_evt('KeyDown', t,        keycode=bk))
         events.append(_evt('KeyUp',   t + hold, keycode=bk))
-        t += hold + _human_interval(rng, 65.0, 195.0)
+        t += hold + _human_interval(rng, erase_gap_lo, erase_gap_hi)
     return t
 
 
 def _add_key_spam(events, timeline, rng, cur_x, cur_y):
-    """Spam a key 2–9×, notice, then erase. KeyCode = integer VK code."""
+    """
+    Accidentally spam a key 2–9×, then erase with Backspace.
+    Spam speed, erase speed, and the 'oh no' pause all re-randomised per call.
+    KeyCode = integer VK code.
+    """
     key   = rng.choice(_SPAM_KEYS)
     vk    = _VK.get(key)
     if vk is None:
-        return timeline   # skip if unmapped
+        return timeline
     count = rng.randint(2, 9)
     t     = timeline + _safe_gap(rng)
     bk    = _VK['Back']
+    # Spam envelope: sometimes key-repeat fast, sometimes deliberate
+    spam_hold_lo = rng.uniform(25.0, 80.0)
+    spam_hold_hi = rng.uniform(spam_hold_lo + 20.0, spam_hold_lo + 100.0)
+    spam_gap_lo  = rng.uniform(15.0, 60.0)
+    spam_gap_hi  = rng.uniform(spam_gap_lo + 15.0, spam_gap_lo + 80.0)
+    # "Oh no" reaction: anywhere from a quick twitch to a long freeze
+    ohnо_pause = rng.uniform(150.0, rng.uniform(500.0, 1800.0))
+    # Erase envelope: typically slower than spam (deliberate)
+    erase_hold_lo = rng.uniform(45.0, 100.0)
+    erase_hold_hi = rng.uniform(erase_hold_lo + 20.0, erase_hold_lo + 90.0)
+    erase_gap_lo  = rng.uniform(40.0, 100.0)
+    erase_gap_hi  = rng.uniform(erase_gap_lo + 20.0, erase_gap_lo + 110.0)
+
     for _ in range(count):
-        hold = _human_interval(rng, 35.0, 110.0)
+        hold = _human_interval(rng, spam_hold_lo, spam_hold_hi)
         events.append(_evt('KeyDown', t,        keycode=vk))
         events.append(_evt('KeyUp',   t + hold, keycode=vk))
-        t += hold + _human_interval(rng, 25.0, 85.0)
-    t += _human_interval(rng, 250.0, 1400.0)   # "oh no" pause
+        t += hold + _human_interval(rng, spam_gap_lo, spam_gap_hi)
+    t += ohnо_pause
     for _ in range(count):
-        hold = _human_interval(rng, 55.0, 150.0)
+        hold = _human_interval(rng, erase_hold_lo, erase_hold_hi)
         events.append(_evt('KeyDown', t,        keycode=bk))
         events.append(_evt('KeyUp',   t + hold, keycode=bk))
-        t += hold + _human_interval(rng, 65.0, 175.0)
+        t += hold + _human_interval(rng, erase_gap_lo, erase_gap_hi)
     return t
 
 
@@ -2749,15 +2827,19 @@ def main():
 
     # Generate DISTRACTIONS now (before folder loop) so files are available
     # for inline insertion during stringing.
-    dist_out = None
+    # Files are written to a TEMP folder (not inside the bundle) — they are used
+    # only as in-memory splice sources and are NOT included in the final output.
+    import tempfile as _tempfile
+    _dist_tmpdir = None
     distraction_files = []   # list of Path objects to pick from during stringing
     if distractions_src:
         print("\n" + "="*70)
-        print("🎭 Generating DISTRACTION files...")
-        dist_out = bundle_dir / f"DISTRACTIONS- {args.bundle_id}"
-        n_written = generate_distraction_files(distractions_src, dist_out, rng, count=50, bundle_id=args.bundle_id)
-        print(f"  ✅ Written {n_written} distraction files → {dist_out.name}/")
-        distraction_files = sorted(dist_out.glob("*.json"))
+        print("🎭 Generating DISTRACTION files (inline splice only, not saved to bundle)...")
+        _dist_tmpdir = _tempfile.mkdtemp(prefix="string_macros_dist_")
+        dist_tmp = Path(_dist_tmpdir) / "distractions"
+        n_written = generate_distraction_files(distractions_src, dist_tmp, rng, count=50, bundle_id=args.bundle_id)
+        print(f"  ✅ Generated {n_written} distraction files (held in memory for insertion)")
+        distraction_files = sorted(dist_tmp.glob("*.json"))
 
     # Process each folder
     for folder_data in main_folders:
@@ -2935,11 +3017,12 @@ def main():
             total_normal_pauses = 0
             massive_pause_ms = 0
             jitter_pct = 0
-            
-            # NEW: Track pre-file pauses, post-pause delays, and cursor transitions
+
+            # NEW: Track pre-file pauses, post-pause delays, cursor transitions, distraction pauses
             total_pre_file = 0
             total_post_pause = 0
             total_transitions = 0
+            total_dist_pause = 0   # cumulative distraction file duration inserted into this version
             
             while True:
                 combo = tracker.get_next_combination()
@@ -2954,10 +3037,12 @@ def main():
                 folder_combinations_used.append(combo_signature)
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
+                # Distractions only inserted into NORMAL files — never raw or inefficient
+                cycle_dist_chance = folder_distraction_chance if (not is_raw and not is_inef) else 0.0
                 cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set,
                     distraction_files=distraction_files,
-                    distraction_chance=folder_distraction_chance
+                    distraction_chance=cycle_dist_chance
                 )
                 
                 cycle_events = cycle_result['events']
@@ -3043,6 +3128,7 @@ def main():
                 total_pre_file += cycle_result.get('pre_pause_total', 0)
                 total_post_pause += cycle_result.get('post_pause_total', 0)
                 total_transitions += cycle_result.get('transition_total', 0)
+                total_dist_pause += cycle_result.get('distraction_pause_total', 0)
                 
                 if len(all_file_info_with_times) > 150:  # Safety limit
                     break
@@ -3191,10 +3277,10 @@ def main():
                 if massive_pause_ms > 0:
                     manifest_entry.insert(-1, f"                - INEFFICIENT MASSIVE PAUSE: {format_ms_precise(massive_pause_ms)}")
             else:  # normal
-                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions
+                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions + total_dist_pause
                 original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
-                
+
                 manifest_entry = [
                     separator,
                     "",
@@ -3205,8 +3291,10 @@ def main():
                     f"                - Within File Pauses: {format_ms_precise(original_intra)}",
                     f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
                     f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
-                    ""
                 ]
+                if total_dist_pause > 0:
+                    manifest_entry.append(f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)}")
+                manifest_entry.append("")
             
             # Add file list with F#* prefix and cumulative timeline
             for folder_num, filename, is_dmwm, end_time in all_file_info_with_times:
@@ -3246,7 +3334,15 @@ def main():
             print(f"   Total combinations: {total_combos} across {len(bundle_combinations)} folders")
         except Exception as e:
             print(f"\n⚠️  Could not write combination file: {e}")
-    
+
+    # Clean up temporary distraction files (used only for inline splicing, not saved to bundle)
+    if _dist_tmpdir:
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(_dist_tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
     print("\n" + "="*70)
     print(f"✅ STRING MACROS COMPLETE - Bundle {args.bundle_id}")
     print(f"📦 Output: {bundle_dir}")
