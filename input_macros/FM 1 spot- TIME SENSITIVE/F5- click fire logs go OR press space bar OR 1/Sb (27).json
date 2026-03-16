@@ -1,0 +1,42 @@
+[
+  {
+    "Type": "KeyUp",
+    "Time": 179,
+    "X": null,
+    "Y": null,
+    "Delta": null,
+    "KeyCode": 35
+  },
+  {
+    "Type": "KeyDown",
+    "Time": 3460,
+    "X": null,
+    "Y": null,
+    "Delta": null,
+    "KeyCode": 32
+  },
+  {
+    "Type": "KeyDown",
+    "Time": 3502,
+    "X": null,
+    "Y": null,
+    "Delta": null,
+    "KeyCode": 164
+  },
+  {
+    "Type": "KeyUp",
+    "Time": 3698,
+    "X": null,
+    "Y": null,
+    "Delta": null,
+    "KeyCode": 164
+  },
+  {
+    "Type": "KeyUp",
+    "Time": 3700,
+    "X": null,
+    "Y": null,
+    "Delta": null,
+    "KeyCode": 32
+  }
+]
