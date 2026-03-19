@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.18.35 - Cumulative: all v3.17.x fixes merged + v3.18.x features
+string_macros.py - v3.18.37 - Cumulative: all v3.17.x fixes merged + v3.18.x features
 - v3.17.1: Fail-fast sys.exit(1) on bad input/missing folders (was silent return)
 - v3.17.2: PRE-Play buffer bug fix — files_added counter replaces fragile
            "if cycle_events:" guard; fixes buffer skipped for always_first/last.
@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.35"
+VERSION = "v3.18.38"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2387,7 +2387,8 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
 
     return written
 
-def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False):
+def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False,
+                          is_click_sensitive=False):
     """
     Apply anti-detection features to a complete cycle.
 
@@ -2397,6 +2398,8 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False):
         is_raw:  If True, 0% within-file pause (no pauses inserted)
         is_inef: If True, 15% within-file pause; False = 5% (normal)
         has_dmwm: If True, skip ALL modifications
+        is_click_sensitive: If True, skip jitter and idle mouse movements
+                            (no coordinate-changing features applied)
 
     Returns:
         (processed_events, stats)
@@ -2412,11 +2415,14 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False):
     if has_dmwm:
         return cycle_events, stats
 
-    # Step 1: Jitter
-    events_with_jitter, jitter_count, move_count, jitter_pct = add_pre_click_jitter(cycle_events, rng)
-    stats['jitter_count'] = jitter_count
-    stats['total_moves'] = move_count
-    stats['jitter_percentage'] = jitter_pct
+    # Step 1: Jitter — SKIPPED for click-sensitive folders
+    if not is_click_sensitive:
+        events_with_jitter, jitter_count, move_count, jitter_pct = add_pre_click_jitter(cycle_events, rng)
+        stats['jitter_count'] = jitter_count
+        stats['total_moves'] = move_count
+        stats['jitter_percentage'] = jitter_pct
+    else:
+        events_with_jitter = cycle_events
 
     # Step 2: Rapid click detection
     protected_ranges = detect_rapid_click_sequences(events_with_jitter)
@@ -2429,12 +2435,15 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False):
     )
     stats['intra_pauses'] = pause_time
 
-    # Step 4: Idle movements
-    movement_pct = rng.uniform(0.40, 0.50)
-    events_with_idle, idle_time = insert_idle_mouse_movements(
-        events_with_pauses, rng, movement_pct
-    )
-    stats['idle_movements'] = idle_time
+    # Step 4: Idle movements — SKIPPED for click-sensitive folders
+    if not is_click_sensitive:
+        movement_pct = rng.uniform(0.40, 0.50)
+        events_with_idle, idle_time = insert_idle_mouse_movements(
+            events_with_pauses, rng, movement_pct
+        )
+        stats['idle_movements'] = idle_time
+    else:
+        events_with_idle = events_with_pauses
 
     return events_with_idle, stats
 
@@ -2534,6 +2543,7 @@ def scan_for_numbered_subfolders(base_path):
             # Check if folder is "click sensitive" (no cursor pathing between files)
             item_lower = item.name.lower()
             is_click_time_sensitive = ('click/time sensitive' in item_lower
+                                       or 'click+time sensitive' in item_lower
                                        or 'click time sensitive' in item_lower)
             is_click_sensitive      = (('click sensitive' in item_lower)
                                        and not is_click_time_sensitive)
@@ -3306,7 +3316,18 @@ def main():
             total_pre_file = 0
             total_transitions = 0
             total_dist_pause = 0   # cumulative distraction file duration inserted into this version
-            
+
+            # INEF: reserve budget for the massive pause so the loop doesn't
+            # overshoot target_ms once the pause is inserted after the loop.
+            # Pre-sample the pause duration using the same formula as insert_massive_pause.
+            # The loop uses (target_ms - massive_pause_budget) as its effective ceiling.
+            if is_inef:
+                _expected_massive_ms = int(rng.uniform(240000.0, 420000.0) * mult)
+                _effective_target = max(target_ms - _expected_massive_ms, target_ms // 4)
+            else:
+                _expected_massive_ms = 0
+                _effective_target = target_ms
+
             while True:
                 combo = tracker.get_next_combination()
                 if not combo:
@@ -3321,18 +3342,18 @@ def main():
                 folder_combinations_used.append(combo_signature)
                 
                 # BUILD CYCLE (F1 → F2 → F3) WITHOUT features
-                # Distractions: Normal and Inefficient get their own chance rates; Raw never gets any
-                if is_raw:
-                    cycle_dist_chance = 0.0
-                elif is_inef:
-                    cycle_dist_chance = folder_dist_chance_inef
-                else:
-                    cycle_dist_chance = folder_dist_chance_normal
                 # Folder is click-sensitive if ANY subfolder in this folder is tagged
                 folder_is_click_sensitive = any(
                     fd.get('is_click_sensitive', False)
                     for fd in subfolder_files.values()
                 )
+                # Distractions: Raw and click-sensitive folders never get any
+                if is_raw or folder_is_click_sensitive:
+                    cycle_dist_chance = 0.0
+                elif is_inef:
+                    cycle_dist_chance = folder_dist_chance_inef
+                else:
+                    cycle_dist_chance = folder_dist_chance_normal
                 cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set,
                     distraction_files=dist_queue,
@@ -3349,7 +3370,8 @@ def main():
                 
                 # APPLY FEATURES to ENTIRE cycle
                 cycle_with_features, stats = apply_cycle_features(
-                    cycle_events, rng, is_raw, has_dmwm, is_inef=is_inef
+                    cycle_events, rng, is_raw, has_dmwm, is_inef=is_inef,
+                    is_click_sensitive=folder_is_click_sensitive
                 )
                 
                 # Check if adding would exceed target
@@ -3396,8 +3418,8 @@ def main():
                                 })
                 
                 potential_total = current_duration + inter_cycle_pause + cycle_duration
-                margin = int(target_ms * 0.05)
-                if potential_total > target_ms + margin and stringed_events:
+                margin = int(_effective_target * 0.05)
+                if potential_total > _effective_target + margin and stringed_events:
                     break
                 
                 # Add cycle to merged events
