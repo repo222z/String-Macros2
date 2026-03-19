@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-string_macros.py - v3.18.30 - Cumulative: all v3.17.x fixes merged + v3.18.x features
+string_macros.py - v3.18.33 - Cumulative: all v3.17.x fixes merged + v3.18.x features
 - v3.17.1: Fail-fast sys.exit(1) on bad input/missing folders (was silent return)
 - v3.17.2: PRE-Play buffer bug fix — files_added counter replaces fragile
            "if cycle_events:" guard; fixes buffer skipped for always_first/last.
@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.30"
+VERSION = "v3.18.33"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -96,18 +96,21 @@ SPECIAL FOLDER (exact name match, case-insensitive):
 These features add natural pauses and delays to prevent robotic timing patterns.
 
 1. WITHIN FILE PAUSES
-   Status: ✅ ACTIVE (Inefficient & Normal files only)
+   Status: ✅ ACTIVE (Normal and Inefficient files only)
    Old Name: "Intra-file pauses"
-   What: Pauses between individual actions INSIDE files (except double-clicks)
-   Source: From original macro recordings
-   Duration: Varies (typically 2-3 min total per file)
-   File Types: 
-     - Raw: REMOVED (stripped out)
-     - Inefficient: KEPT and multiplied
-     - Normal: KEPT and multiplied
-   Purpose: Natural hesitation between actions
-   Code: Line ~850 (filter pauses in raw files)
-   Manifest: "Within original files pauses: Xm Xs"
+   What: A single pause inserted at a safe point inside each individual file.
+         Duration is a PERCENTAGE of that file's own play time — so longer files
+         get proportionally longer pauses.
+   Values by File Type:
+     - Raw:         0%  — no pause inserted
+     - Normal:      5%  — e.g. 20s file → 1.0s pause
+     - Inefficient: 15% — e.g. 20s file → 3.0s pause
+   Safe Location: Middle 80% of file only; never inside drag sequences, never
+                  inside rapid-click sequences, never immediately before DragStart.
+   Duration: float ms (no rounding) = file_duration_ms × percentage
+   Purpose: Natural hesitation that scales with file length
+   Code: insert_intra_file_pauses() with file_type parameter
+   Manifest: "Within File Pauses: Xm Xs"
 
 2. PRE-PLAY BUFFER
    Status: ✅ ACTIVE (Always, all file types)
@@ -135,22 +138,13 @@ These features add natural pauses and delays to prevent robotic timing patterns.
    Code: Line ~2084-2093 (inter_cycle_pause with file length check)
    Manifest: "INEFFICIENT Before File Pause: Xm Xs"
 
-4. POST-PAUSE DELAYS
-   Status: ⚠️ DISABLED (Marked for future removal)
-   Old Name: "Post-pause delays"
-   What: Delay after pre-pause, before cursor moves
-   Duration: 500-1000ms × multiplier (when active)
-   Reason Disabled: Redundant with PRE-PLAY BUFFER
-   Code: Line ~1135-1140 (currently disabled)
-   Future: Will be removed in v4.0
-   Manifest: Shows 0m 0s when disabled
 
 5. INEFFICIENT MASSIVE PAUSE
    Status: ✅ ACTIVE (Inefficient files ONLY)
    Old Name: "Massive pause"
    What: One random pause inserted at safe location
-   Duration: 2-5 minutes (120000-300000ms, random, NOT rounded) × multiplier
-   Examples: ×2.0 = 4-10 min | ×3.0 = 6-15 min
+   Duration: 4-7 minutes (240000-420000ms, random, NOT rounded) × multiplier
+   Examples: ×2.0 = 8-14 min | ×3.0 = 12-21 min
    Safe Location Detection: EXCLUDES pause from:
      - Drag sequences (between DragStart and DragEnd)
      - Rapid click sequences (double-clicks, spam clicks)
@@ -388,8 +382,8 @@ These features ensure files play correctly without breaking or causing errors.
          Result: Only subfolder 2 is time_sensitive
     
     File Distribution Changes:
-      - Regular folder: 3 Raw + 3 Inef + 6 Normal = 12 files
-      - Time sensitive: 3 Raw + 0 Inef + 9 Normal = 12 files
+      - Regular folder: 2 Raw + 3 Inef + 7 Normal = 12 files (2:3:7 ratio)
+      - Time sensitive: 6 Raw + 0 Inef + 6 Normal = 12 files (1:1 ratio)
     
     Priority: Main folder tag overrides individual subfolder tags
     Purpose: Activities requiring consistent timing (combat, PvP, timed tasks)
@@ -738,6 +732,43 @@ def parse_optional_chance(folder_name: str) -> float:
         return pct / 100.0
     # No number → default random range (float, never rounded)
     return random.uniform(0.24, 0.33)
+
+
+def parse_max_files(folder_name: str) -> int:
+    """
+    Parse max-files count from folder name.
+    Formats (case-insensitive, all combinations):
+      "F3 optional58-6-"  → max 6  (58% chance)
+      "F3 optional-6-"    → max 6  (default chance)
+      "F1-4-"             → max 4  (always included)
+      "F3 optional58-"    → max 1  (no max-files number = default 1)
+      "F1- mine rock/"    → max 1  (no number = default 1)
+
+    The max-files number is the LAST standalone integer before a trailing dash,
+    not the folder number or the optional-chance percentage.
+    Returns int >= 1.
+    """
+    import re
+    # Pattern: dash, then digits (the max-files count), then dash or end
+    # We look for a bare integer surrounded by dashes that isn't the folder number
+    # (folder number is at the very start) and isn't the optional-chance percentage
+    # (which directly follows "optional").
+    # Strategy: strip the leading folder number, strip optional-chance, then find
+    # a remaining -N- or -N/ pattern.
+    name = folder_name.strip('/').strip()
+    # Remove folder number prefix (e.g. "3", "3.5", "F3")
+    name = re.sub(r'^[Ff]?\d+(?:\.\d+)?\s*', '', name)
+    # Remove optional-chance number (digits immediately after "optional")
+    name = re.sub(r'optional\s*\d+(?:\.\d+)?', 'optional', name, flags=re.IGNORECASE)
+    # Now look for -N- or -N/ or -N at end where N is 2-3 digits (1 digit would be ambiguous)
+    # Actually look for any -digits- pattern remaining
+    matches = re.findall(r'-(\d+)-', name)
+    if matches:
+        try:
+            return max(1, int(matches[-1]))   # take the last one
+        except ValueError:
+            pass
+    return 1   # default: 1 file
 
 
 def fix_click_events(events: list) -> list:
@@ -1184,54 +1215,63 @@ def add_pre_click_jitter(events: list, rng: random.Random) -> tuple:
     
     return events, jitter_count, total_moves, jitter_percentage
 
-def insert_intra_file_pauses(events: list, rng: random.Random, protected_ranges: list = None) -> tuple:
+def insert_intra_file_pauses(events: list, rng: random.Random,
+                              protected_ranges: list = None,
+                              file_type: str = 'normal') -> tuple:
     """
-    Insert random pauses before recorded actions.
-    Each file gets 1-4 random pauses (randomly chosen per file).
-    Each pause is 1000-2000ms (non-rounded).
-    Protected ranges (rapid click sequences) are skipped.
-    Returns (events_with_pauses, total_pause_time).
+    Insert a single within-file pause whose duration is a percentage of the
+    individual file's own play time:
+      Raw:         0%  — no pause inserted
+      Normal:      5%  — e.g. 20s file → 1s pause somewhere safe
+      Inefficient: 15% — e.g. 20s file → 3s pause somewhere safe
+
+    The pause is inserted at a single randomly chosen safe point (not in a drag
+    sequence, not in a rapid-click sequence, not in the first or last 10%).
+    Returns (events_with_pause, total_pause_time_ms).
     """
     if not events or len(events) < 5:
         return events, 0
-    
+
+    pct_map = {'raw': 0.0, 'normal': 0.05, 'inef': 0.15}
+    pct = pct_map.get(file_type, 0.05)
+    if pct == 0.0:
+        return events, 0
+
     if protected_ranges is None:
         protected_ranges = []
-    
-    # Randomly decide how many pauses for this file (1-4)
-    num_pauses = rng.randint(1, 4)
-    
-    # Build O(1) protected index set
+
+    file_duration_ms = events[-1].get('Time', 0) - events[0].get('Time', 0)
+    if file_duration_ms <= 0:
+        return events, 0
+
+    # Float ms — no rounding
+    pause_duration = file_duration_ms * pct
+
     protected_set = set()
-    for start, end in protected_ranges:
-        for k in range(start, end + 1):
+    for s, e in protected_ranges:
+        for k in range(s, e + 1):
             protected_set.add(k)
 
-    # Find valid indices (not in protected ranges)
-    valid_indices = [idx for idx in range(1, len(events)) if idx not in protected_set]
-    
-    if not valid_indices:
-        return events, 0
-    
-    # Select random unique indices from valid ones
-    num_pauses = min(num_pauses, len(valid_indices))
-    pause_indices = rng.sample(valid_indices, num_pauses)
-    pause_indices.sort()
-    
-    total_pause_added = 0
-    
-    # Apply pauses at selected indices
-    for pause_idx in pause_indices:
-        # Generate non-rounded pause duration (1000-2000ms)
-        pause_duration = int(rng.uniform(1000.123, 1999.987))
-        total_pause_added += pause_duration
-        
-        # Shift this event and all subsequent events by the pause (no rounding!)
-        for j in range(pause_idx, len(events)):
-            events[j]["Time"] = events[j]["Time"] + pause_duration
-    
-    return events, total_pause_added
+    drag_indices = build_drag_index_set(events)
 
+    first_safe = max(1, int(len(events) * 0.10))
+    last_safe  = min(len(events) - 1, int(len(events) * 0.90))
+    valid = [
+        idx for idx in range(first_safe, last_safe)
+        if idx not in protected_set
+        and idx not in drag_indices
+        and events[idx].get('Type') != 'DragStart'
+        and (idx + 1 >= len(events) or events[idx + 1].get('Type') != 'DragStart')
+    ]
+
+    if not valid:
+        return events, 0
+
+    pause_idx = rng.choice(valid)
+    for j in range(pause_idx, len(events)):
+        events[j]['Time'] = events[j].get('Time', 0) + pause_duration
+
+    return events, pause_duration
 def insert_idle_mouse_movements(events, rng, movement_percentage):
     """
     Insert realistic human-like mouse movements during idle periods (gaps > 2 seconds).
@@ -1582,8 +1622,8 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
     if not events or len(events) < 10:
         return events, 0, 0
     
-    # Generate massive pause: 2-5 minutes (120000-300000ms) × multiplier
-    pause_duration = int(rng.uniform(120000.0, 300000.0) * mult)
+    # Generate massive pause: 4-7 minutes (240000-420000ms) × multiplier
+    pause_duration = int(rng.uniform(240000.0, 420000.0) * mult)
     
     # Detect protected ranges (rapid clicks, double-clicks)
     protected_ranges = detect_rapid_click_sequences(events)
@@ -1626,7 +1666,8 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
 # ============================================================================
 
 def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
-                 distraction_files=None, distraction_chance=0.0):
+                 distraction_files=None, distraction_chance=0.0,
+                 is_click_sensitive=False):
     """
     String one complete cycle (F1 → F2 → F3 → ...) into a single unit.
     Returns raw events WITHOUT anti-detection features.
@@ -1635,11 +1676,12 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
     distraction_files: list of Path objects for generated distraction JSONs.
     distraction_chance: float in [0,1] — probability of inserting one distraction
                         file between each pair of folder transitions.
+    is_click_sensitive: if True, skip cursor pathing between files (no coord changes).
     """
     
     def add_file_to_cycle(file_path, folder_num, is_dmwm, file_label):
         """Helper to add a file to the cycle"""
-        nonlocal timeline, cycle_events, file_info_list, has_dmwm, total_pre_pause, total_post_pause, total_transition_time, files_added
+        nonlocal timeline, cycle_events, file_info_list, has_dmwm, total_pre_pause, total_transition_time, files_added
         
         # Load events
         try:
@@ -1709,49 +1751,35 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                     first_x, first_y = int(e['X']), int(e['Y'])
                     break
             
-            # POST-PAUSE DELAY: DISABLED (marked for removal in v4.0)
-            post_pause_delay = 0
-            timeline += post_pause_delay
-            total_post_pause += post_pause_delay
             
-            # Transition duration: 200-400ms (for actual cursor movement)
-            transition_duration = int(rng.uniform(200, 400))
-            
-            # Add smooth cursor transition AFTER pause
-            if last_x and first_x and (last_x != first_x or last_y != first_y):
-                transition_path = generate_human_path(
-                    last_x, last_y, first_x, first_y,
-                    transition_duration, rng
-                )
-                
-                # Add transition movements
-                for rel_time, x, y in transition_path:
+            # CURSOR TRANSITION: skipped for click-sensitive folders
+            # (no coordinate changes between files — cursor stays wherever it was)
+            if not is_click_sensitive:
+                transition_duration = int(rng.uniform(200, 400))
+                if last_x is not None and first_x is not None and (last_x != first_x or last_y != first_y):
+                    transition_path = generate_human_path(
+                        last_x, last_y, first_x, first_y,
+                        transition_duration, rng
+                    )
+                    for rel_time, x, y in transition_path:
+                        cycle_events.append({
+                            'Type': 'MouseMove',
+                            'Time': timeline + rel_time,
+                            'X': x,
+                            'Y': y
+                        })
+                    timeline += transition_duration
+                    total_transition_time += transition_duration
+                    # Final snap to exact start position
                     cycle_events.append({
                         'Type': 'MouseMove',
-                        'Time': timeline + rel_time,
-                        'X': x,
-                        'Y': y
+                        'Time': timeline,
+                        'X': first_x,
+                        'Y': first_y
                     })
-                
-                timeline += transition_duration
-                
-                # Track transition time
-                total_transition_time += transition_duration
-                
-                # Final position to ensure exact placement
-                cycle_events.append({
-                    'Type': 'MouseMove',
-                    'Time': timeline,
-                    'X': first_x,
-                    'Y': first_y
-                })
-                
-                # POST-SNAP GAP: advance timeline so the file's first event
-                # (especially DragStart) never lands at the same timestamp as
-                # the snap MouseMove above. Without this, both share 'timeline'
-                # and the macro player sees a zero-gap DragStart = clamping.
-                post_snap_gap = int(rng.uniform(80, 150))
-                timeline += post_snap_gap
+                    # POST-SNAP GAP
+                    post_snap_gap = int(rng.uniform(80, 150))
+                    timeline += post_snap_gap
         
         # Add events from current file
         for event in events:
@@ -1774,7 +1802,6 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
     files_added = 0  # Counts files added; guards pre-play buffer for every non-first file
     # NEW: Track pre-file pauses, post-pause delays, cursor transitions, and distraction durations
     total_pre_pause = 0
-    total_post_pause = 0
     total_transition_time = 0
     total_distraction_pause = 0  # cumulative duration of all inserted distraction files
     
@@ -1810,28 +1837,35 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                                f"[DISTRACTION] {dist_path.name}")
             total_distraction_pause += (timeline - t_before)
 
-    for idx_combo, (folder_num, file_path) in enumerate(combination):
+    # For MULTI-subfolder mode: collect always_first/last from the first folder
+    # that has them, play ONCE before/after ALL files in the cycle.
+    # This mirrors single_subfolder behaviour: opener → files → closer, not
+    # opener → file → closer → opener → file → closer → ...
+    multi_always_first = None
+    multi_always_last  = None
+    if not single_subfolder and combination:
+        for _fn, _fl in combination:
+            _fd = subfolder_files.get(_fn, {})
+            if multi_always_first is None and _fd.get('always_first'):
+                multi_always_first = (_fn, _fd['always_first'])
+            if multi_always_last is None and _fd.get('always_last'):
+                multi_always_last  = (_fn, _fd['always_last'])
+        if multi_always_first:
+            _fn, _af = multi_always_first
+            is_dmwm = _af in dmwm_file_set
+            add_file_to_cycle(_af, _fn, is_dmwm, f"[ALWAYS FIRST] {_af.name}")
+
+    for idx_combo, (folder_num, file_list) in enumerate(combination):
         folder_data = subfolder_files.get(folder_num, {})
+        if not isinstance(file_list, list):
+            file_list = [file_list]
 
         # DISTRACTION: maybe insert BEFORE this folder's files
         _maybe_insert_distraction(folder_num)
 
-        if single_subfolder:
+        for file_path in file_list:
             is_dmwm = file_path in dmwm_file_set
             add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
-        else:
-            always_first = folder_data.get('always_first')
-            if always_first:
-                is_dmwm = always_first in dmwm_file_set
-                add_file_to_cycle(always_first, folder_num, is_dmwm,
-                                   f"[ALWAYS FIRST] {always_first.name}")
-            is_dmwm = file_path in dmwm_file_set
-            add_file_to_cycle(file_path, folder_num, is_dmwm, file_path.name)
-            always_last = folder_data.get('always_last')
-            if always_last:
-                is_dmwm = always_last in dmwm_file_set
-                add_file_to_cycle(always_last, folder_num, is_dmwm,
-                                   f"[ALWAYS LAST] {always_last.name}")
 
     # DISTRACTION: maybe insert AFTER the very last folder
     if combination:
@@ -1839,17 +1873,19 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         _maybe_insert_distraction(last_folder_num)
 
     if single_subfolder and single_always_last:
-        # Play always_last once after everything
         is_dmwm = single_always_last in dmwm_file_set
         add_file_to_cycle(single_always_last, only_folder_num, is_dmwm,
                           f"[ALWAYS LAST] {single_always_last.name}")
+    elif not single_subfolder and multi_always_last:
+        _fn, _al = multi_always_last
+        is_dmwm = _al in dmwm_file_set
+        add_file_to_cycle(_al, _fn, is_dmwm, f"[ALWAYS LAST] {_al.name}")
 
     return {
         'events': cycle_events,
         'file_info': file_info_list,
         'has_dmwm': has_dmwm,
         'pre_pause_total': total_pre_pause,
-        'post_pause_total': total_post_pause,
         'transition_total': total_transition_time,
         'distraction_pause_total': total_distraction_pause,
     }
@@ -2351,17 +2387,17 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
 
     return written
 
-def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm):
+def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False):
     """
     Apply anti-detection features to a complete cycle.
-    This is where jitter, pauses, idle movements are added to the ENTIRE cycle.
-    
+
     Args:
         cycle_events: Events from one complete cycle
         rng: Random generator
-        is_raw: If True, skip intra-cycle pauses
-        has_dmwm: If True, skip ALL modifications (cycle contains dmwm file)
-    
+        is_raw:  If True, 0% within-file pause (no pauses inserted)
+        is_inef: If True, 15% within-file pause; False = 5% (normal)
+        has_dmwm: If True, skip ALL modifications
+
     Returns:
         (processed_events, stats)
     """
@@ -2372,36 +2408,34 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm):
         'intra_pauses': 0,
         'idle_movements': 0
     }
-    
+
     if has_dmwm:
-        # Cycle contains dmwm file - no modifications
         return cycle_events, stats
-    
-    # Step 1: Jitter (RE-ENABLED)
+
+    # Step 1: Jitter
     events_with_jitter, jitter_count, move_count, jitter_pct = add_pre_click_jitter(cycle_events, rng)
     stats['jitter_count'] = jitter_count
     stats['total_moves'] = move_count
     stats['jitter_percentage'] = jitter_pct
-    
+
     # Step 2: Rapid click detection
     protected_ranges = detect_rapid_click_sequences(events_with_jitter)
-    
-    # Step 3: Intra-cycle pauses (skip for raw)
-    if not is_raw:
-        events_with_pauses, pause_time = insert_intra_file_pauses(
-            events_with_jitter, rng, protected_ranges
-        )
-        stats['intra_pauses'] = pause_time
-    else:
-        events_with_pauses = events_with_jitter
-    
+
+    # Step 3: Within-file pause (percentage-based on each file's own duration)
+    #   Raw:  0%   Normal: 5%   Inefficient: 15%
+    file_type = 'raw' if is_raw else ('inef' if is_inef else 'normal')
+    events_with_pauses, pause_time = insert_intra_file_pauses(
+        events_with_jitter, rng, protected_ranges, file_type=file_type
+    )
+    stats['intra_pauses'] = pause_time
+
     # Step 4: Idle movements
     movement_pct = rng.uniform(0.40, 0.50)
     events_with_idle, idle_time = insert_idle_mouse_movements(
         events_with_pauses, rng, movement_pct
     )
     stats['idle_movements'] = idle_time
-    
+
     return events_with_idle, stats
 
 
@@ -2485,16 +2519,27 @@ def scan_for_numbered_subfolders(base_path):
             # Check if folder is "end" (becomes definitive end point)
             is_end = 'end' in item.name.lower()
             
-            # Check if folder is "time sensitive" (no inefficient files generated)
+            # Check if folder is "time sensitive" (1:1 raw:normal, no inef, minimal overhead)
             # Priority: Main folder tag > Individual subfolder tag
             if main_folder_time_sensitive:
                 is_time_sensitive = True  # Main folder overrides all
             else:
                 is_time_sensitive = 'time sensitive' in item.name.lower()
-            
+
+            # Check if folder is "click sensitive" (no cursor pathing between files)
+            item_lower = item.name.lower()
+            is_click_time_sensitive = ('click/time sensitive' in item_lower
+                                       or 'click time sensitive' in item_lower)
+            is_click_sensitive      = (('click sensitive' in item_lower)
+                                       and not is_click_time_sensitive)
+            # click/time sensitive implies both flags
+            if is_click_time_sensitive:
+                is_time_sensitive    = True
+                is_click_sensitive   = True
+
             # "optional/end" combo: optional folder that ends loop if chosen
             is_optional_end = is_optional and is_end
-            
+
             if regular_files:  # Must have at least one regular file
                 numbered_folders[folder_num] = {
                     'files': regular_files,
@@ -2503,6 +2548,8 @@ def scan_for_numbered_subfolders(base_path):
                     'is_end': is_end,
                     'is_optional_end': is_optional_end,
                     'is_time_sensitive': is_time_sensitive,
+                    'is_click_sensitive': is_click_sensitive,
+                    'max_files': parse_max_files(item.name),
                     'always_first': always_first,
                     'always_last': always_last
                 }
@@ -2591,6 +2638,14 @@ class ManualHistoryTracker:
         
         # Load ALL combinations from ALL files in the folder
         self.used_combinations = self._load_all_combinations()
+
+        # Per-subfolder virtual queues: each subfolder gets its own shuffled
+        # queue so no file repeats until all files in that subfolder are used.
+        self._file_queues = {}   # {folder_num: [shuffled file paths]}
+        for fn, fd in self.subfolder_files.items():
+            pool = list(fd.get('files', []))
+            self.rng.shuffle(pool)
+            self._file_queues[fn] = pool
         
         print(f"  📊 {len(self.used_combinations)} combinations loaded from history")
         print(f"  📁 History folder: {self.history_dir}")
@@ -2639,6 +2694,30 @@ class ManualHistoryTracker:
         
         return all_used
     
+    def _next_file(self, folder_num):
+        """Return the next file from this subfolder's virtual queue.
+        Refills and reshuffles when exhausted — no file repeats until all used.
+        Boundary guard prevents the last file of one pass from being the first
+        of the next pass (cross-boundary consecutive repeat)."""
+        q = self._file_queues.get(folder_num)
+        if not q:
+            pool = list(self.subfolder_files.get(folder_num, {}).get('files', []))
+            if not pool:
+                return None
+            self.rng.shuffle(pool)
+            # Boundary guard: if the last item would repeat the previous pick,
+            # swap it with a random other position
+            last_key = f"_last_{folder_num}"
+            last = getattr(self, last_key, None)
+            if last is not None and len(pool) > 1 and pool[-1] == last:
+                swap = self.rng.randint(0, len(pool) - 2)
+                pool[-1], pool[swap] = pool[swap], pool[-1]
+            self._file_queues[folder_num] = pool
+            q = self._file_queues[folder_num]
+        item = q.pop()
+        setattr(self, f"_last_{folder_num}", item)
+        return item
+
     def get_next_combination(self):
         """Get next unused combination (with end folder support)"""
         max_attempts = 500
@@ -2656,8 +2735,8 @@ class ManualHistoryTracker:
                         # Optional/end folder was chosen - include it and STOP
                         files = folder_data['files']
                         if files:
-                            chosen_file = self.rng.choice(files)
-                            combination.append((folder_num, chosen_file))
+                            chosen_file = self._next_file(folder_num)
+                            if chosen_file: combination.append((folder_num, chosen_file))
                         break  # End the loop here
                     else:
                         # Optional/end folder was skipped - continue to next folders
@@ -2666,10 +2745,8 @@ class ManualHistoryTracker:
                 # Check for regular "end" folder (always included, always ends loop)
                 if folder_data.get('is_end', False) and not folder_data.get('is_optional', False):
                     # End folder - include it and STOP
-                    files = folder_data['files']
-                    if files:
-                        chosen_file = self.rng.choice(files)
-                        combination.append((folder_num, chosen_file))
+                    _f = self._next_file(folder_num)
+                    if _f: combination.append((folder_num, [_f]))
                     break  # End the loop here
                 
                 # Regular optional folder check (uses random 27-43% chance stored per folder)
@@ -2678,19 +2755,25 @@ class ManualHistoryTracker:
                     if self.rng.random() >= optional_chance:
                         continue
                 
-                # Pick random file from this folder
-                files = folder_data['files']
-                if files:
-                    chosen_file = self.rng.choice(files)
-                    combination.append((folder_num, chosen_file))
+                # Pick 1..max_files files from this subfolder's virtual queue
+                _max = folder_data.get('max_files', 1)
+                _n = self.rng.randint(1, _max) if _max > 1 else 1
+                _picked = []
+                for _ in range(_n):
+                    _f = self._next_file(folder_num)
+                    if _f:
+                        _picked.append(_f)
+                if _picked:
+                    combination.append((folder_num, _picked))
             
             if not combination:
                 continue
             
             # Create signature (format folder numbers cleanly)
             signature = "|".join(
-                f"F{int(fn) if fn == int(fn) else fn}={f.name}" 
-                for fn, f in combination
+                f"F{int(fn) if fn == int(fn) else fn}=" +
+                "+".join(fp.name for fp in (fl if isinstance(fl, list) else [fl]))
+                for fn, fl in combination
             )
             
             # Check if unused
@@ -2708,9 +2791,8 @@ class ManualHistoryTracker:
             if folder_data.get('is_optional_end', False):
                 optional_chance = folder_data.get('optional_chance', 0.50)
                 if self.rng.random() < optional_chance:
-                    files = folder_data['files']
-                    if files:
-                        combination.append((folder_num, self.rng.choice(files)))
+                    _f = self._next_file(folder_num)
+                    if _f: combination.append((folder_num, [_f]))
                     break
                 else:
                     continue
@@ -2718,8 +2800,8 @@ class ManualHistoryTracker:
             # Handle regular end
             if folder_data.get('is_end', False) and not folder_data.get('is_optional', False):
                 files = folder_data['files']
-                if files:
-                    combination.append((folder_num, self.rng.choice(files)))
+                _f = self._next_file(folder_num)
+                if _f: combination.append((folder_num, [_f]))
                 break
             
             # Handle regular optional
@@ -2728,9 +2810,8 @@ class ManualHistoryTracker:
                 if self.rng.random() >= optional_chance:
                     continue
             
-            files = folder_data['files']
-            if files:
-                combination.append((folder_num, self.rng.choice(files)))
+            _f = self._next_file(folder_num)
+            if _f: combination.append((folder_num, _f))
         
         return combination if combination else None
 
@@ -3011,8 +3092,8 @@ def main():
         # - Normal files:      7.0–10.0%  (tighter window, more controlled)
         # - Inefficient files: 7.0–14.0%  (wider window, more varied)
         # - Raw files:         0%          (never)
-        folder_dist_chance_normal = rng.uniform(7.0, 10.0) / 100.0 if distraction_files else 0.0
-        folder_dist_chance_inef   = rng.uniform(7.0, 14.0) / 100.0 if distraction_files else 0.0
+        folder_dist_chance_normal = rng.uniform(3.5,  5.0) / 100.0 if distraction_files else 0.0
+        folder_dist_chance_inef   = rng.uniform(3.5,  7.0) / 100.0 if distraction_files else 0.0
         
         # D_ REMOVAL
         cleaned_folder_name = re.sub(r'[Dd]_', '', folder_name)
@@ -3025,7 +3106,7 @@ def main():
         # Create output folder — append bundle ID in specific folders mode
         output_folder_name = cleaned_folder_name
         if args.specific_folders:
-            output_folder_name = f"{cleaned_folder_name}- {args.bundle_id}"
+            output_folder_name = f"({args.bundle_id}) {cleaned_folder_name}"
         print(f"\n🔨 Processing: {output_folder_name}")
         out_folder = bundle_dir / output_folder_name
         out_folder.mkdir(parents=True, exist_ok=True)
@@ -3070,16 +3151,44 @@ def main():
         folder_combinations_used = []
         
         # Calculate total original duration
+        # Detect "copied" subfolders: subfolders whose file-name sets are identical
+        # (e.g. F1-mine and F2-mine with same files). Count their files only once
+        # so the duration reflects unique content, not duplicated repetitions.
+        # Count each unique filename only once across ALL subfolders.
+        # Copied folders (F1-mine, F2-mine) may share file names — count once.
+        _seen_filenames = set()   # filenames already counted (by name, not path)
         total_original_files = 0
         total_original_ms = 0
-        
+        # Count subfolders whose *entire* file-name set is a duplicate of another
+        _seen_filesets = []
+        num_copied_folders = 0
+
         for _subfolder_data in subfolder_files.values():
             files = _subfolder_data['files']
-            total_original_files += len(files)
+            fileset = frozenset(f.name for f in files)
+            if fileset in _seen_filesets:
+                num_copied_folders += 1   # whole subfolder is a copy
+            else:
+                _seen_filesets.append(fileset)
+            # Always count individual files that haven't been seen by name yet
             for f in files:
-                total_original_ms += get_file_duration_ms(f)
+                if f.name not in _seen_filenames:
+                    _seen_filenames.add(f.name)
+                    total_original_files += 1
+                    total_original_ms += get_file_duration_ms(f)
 
         
+        # Build subfolder file count lines for manifest
+        _subfolder_lines = []
+        for _fn in sorted(subfolder_files.keys()):
+            _fd = subfolder_files[_fn]
+            _fn_label = str(int(_fn) if _fn == int(_fn) else _fn)
+            _file_count = len(_fd.get('files', []))
+            _always_note = ""
+            if _fd.get('always_first'): _always_note += " + always_first"
+            if _fd.get('always_last'):  _always_note += " + always_last"
+            _subfolder_lines.append(f"  F{_fn_label}: {_file_count} file(s){_always_note}")
+
         # Manifest header
         manifest_lines = [
             f"MANIFEST FOR FOLDER: {cleaned_folder_name}",
@@ -3087,9 +3196,10 @@ def main():
             f"Script Version: {VERSION}",
             f"Stringed Bundle: stringed_bundle_{args.bundle_id}",
             f"Total Original Files: {total_original_files}",
-            f"Total Original Files Duration: {format_ms_precise(total_original_ms)}",
-            ""
-        ]
+            (f"Total Original Files Duration: {format_ms_precise(total_original_ms)} ({num_copied_folders} copied folder(s))"
+             if num_copied_folders > 0
+             else f"Total Original Files Duration: {format_ms_precise(total_original_ms)}"),
+        ] + _subfolder_lines + [""]
         
         # Check if any folders are 'time sensitive' (no inefficient files)
         has_time_sensitive = any(
@@ -3123,10 +3233,11 @@ def main():
         # Time-sensitive folders replace all inefficient slots with normal.
         _total_parts = 12  # ratio denominator
         if has_time_sensitive:
-            num_raw   = max(1, round(args.versions * 2 / _total_parts))
-            num_inef  = 0
+            # 1:1 ratio for time-sensitive: half raw, half normal, zero inefficient
+            num_raw    = max(1, round(args.versions / 2))
+            num_inef   = 0
             num_normal = args.versions - num_raw
-            print(f"  📊 File distribution: {num_raw} Raw + 0 Inef + {num_normal} Normal (time sensitive — 2:0:{args.versions-num_raw} ratio)")
+            print(f"  📊 File distribution: {num_raw} Raw + 0 Inef + {num_normal} Normal (time sensitive — 1:1 ratio)")
         else:
             num_raw   = max(1, round(args.versions * 2 / _total_parts))
             num_inef  = max(1, round(args.versions * 3 / _total_parts))
@@ -3188,7 +3299,6 @@ def main():
 
             # NEW: Track pre-file pauses, post-pause delays, cursor transitions, distraction pauses
             total_pre_file = 0
-            total_post_pause = 0
             total_transitions = 0
             total_dist_pause = 0   # cumulative distraction file duration inserted into this version
             
@@ -3199,8 +3309,9 @@ def main():
                 
                 # Track this combination signature (format folder numbers cleanly)
                 combo_signature = "|".join(
-                    f"F{int(fn) if fn == int(fn) else fn}={f.name}" 
-                    for fn, f in combo
+                    f"F{int(fn) if fn == int(fn) else fn}=" +
+                    "+".join(fp.name for fp in (fl if isinstance(fl, list) else [fl]))
+                    for fn, fl in combo
                 )
                 folder_combinations_used.append(combo_signature)
                 
@@ -3212,10 +3323,16 @@ def main():
                     cycle_dist_chance = folder_dist_chance_inef
                 else:
                     cycle_dist_chance = folder_dist_chance_normal
+                # Folder is click-sensitive if ANY subfolder in this folder is tagged
+                folder_is_click_sensitive = any(
+                    fd.get('is_click_sensitive', False)
+                    for fd in subfolder_files.values()
+                )
                 cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set,
                     distraction_files=dist_queue,
-                    distraction_chance=cycle_dist_chance
+                    distraction_chance=cycle_dist_chance,
+                    is_click_sensitive=folder_is_click_sensitive
                 )
                 
                 cycle_events = cycle_result['events']
@@ -3227,7 +3344,7 @@ def main():
                 
                 # APPLY FEATURES to ENTIRE cycle
                 cycle_with_features, stats = apply_cycle_features(
-                    cycle_events, rng, is_raw, has_dmwm
+                    cycle_events, rng, is_raw, has_dmwm, is_inef=is_inef
                 )
                 
                 # Check if adding would exceed target
@@ -3299,7 +3416,6 @@ def main():
                 
                 # NEW: Accumulate pre-file pause, post-pause, and transition times
                 total_pre_file += cycle_result.get('pre_pause_total', 0)
-                total_post_pause += cycle_result.get('post_pause_total', 0)
                 total_transitions += cycle_result.get('transition_total', 0)
                 total_dist_pause += cycle_result.get('distraction_pause_total', 0)
                 
@@ -3415,7 +3531,7 @@ def main():
             version_label = f"Version {prefix}{v_code}_{total_min}m{total_sec}s:"
             
             if is_raw:
-                total_pause = total_inter + total_pre_file + total_post_pause + total_transitions
+                total_pause = total_inter + total_pre_file + total_transitions
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
                 
                 manifest_entry = [
@@ -3427,13 +3543,14 @@ def main():
                     f"BREAKDOWN before multiplier:",
                     f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
                     f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
+                    f"                - DISTRACTION File Pause: 0m 0s (Raw files — none inserted)",
                     ""
                 ]
             elif is_inef:
-                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions + massive_pause_ms
+                total_pause = total_intra + total_inter + total_pre_file + total_transitions + massive_pause_ms + total_dist_pause
                 original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
-                
+
                 manifest_entry = [
                     separator,
                     "",
@@ -3445,12 +3562,13 @@ def main():
                     f"                - INEFFICIENT Before File Pause: {format_ms_precise(original_inter)}",
                     f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
                     f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
+                    f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)} (incl. ~17-30s cooldowns between actions)",
                     ""
                 ]
                 if massive_pause_ms > 0:
                     manifest_entry.insert(-1, f"                - INEFFICIENT MASSIVE PAUSE: {format_ms_precise(massive_pause_ms)}")
             else:  # normal
-                total_pause = total_intra + total_inter + total_pre_file + total_post_pause + total_transitions + total_dist_pause
+                total_pause = total_intra + total_inter + total_pre_file + total_transitions + total_dist_pause
                 original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
 
@@ -3466,7 +3584,9 @@ def main():
                     f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
                 ]
                 if total_dist_pause > 0:
-                    manifest_entry.append(f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)}")
+                    manifest_entry.append(f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)} (incl. ~17-30s cooldowns between actions)")
+                else:
+                    manifest_entry.append(f"                - DISTRACTION File Pause: 0m 0s")
                 manifest_entry.append("")
             
             # Add file list with F#* prefix and cumulative timeline
