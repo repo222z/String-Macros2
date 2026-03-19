@@ -61,7 +61,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.39"
+VERSION = "v3.18.40"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -191,7 +191,7 @@ These features add natural pauses and delays to prevent robotic timing patterns.
 These features add variation and unpredictability to prevent detectable patterns.
 
 1. CURSOR TO START POINT
-   Status: ✅ ACTIVE (Always)
+   Status: ✅ ACTIVE (Skipped for click-sensitive folders)
    Old Name: "Cursor transitions"
    What: Smooth cursor movement from file end position to next file start
    Duration: 200-400ms per transition (varies by path style)
@@ -362,9 +362,9 @@ These features ensure files play correctly without breaking or causing errors.
 
 11. 'TIME SENSITIVE' TAGGED FOLDERS
     Status: ✅ ACTIVE (If "time sensitive" in folder name)
-    New Feature: v3.13.0 | Enhanced: v3.14.2
+    New Feature: v3.13.0 | Enhanced: v3.14.2 | Ratio updated: v3.18.32
     Tag Detection: "time sensitive" anywhere in folder name (case-insensitive)
-    Behavior: NO inefficient files generated
+    Behavior: NO inefficient files generated; 1:1 raw:normal ratio
     
     Two Application Modes:
       A) MAIN FOLDER TAGGED:
@@ -387,8 +387,49 @@ These features ensure files play correctly without breaking or causing errors.
     
     Priority: Main folder tag overrides individual subfolder tags
     Purpose: Activities requiring consistent timing (combat, PvP, timed tasks)
-    Code: Line ~1449-1459 (main folder check), Line ~1505-1511 (subfolder check)
+    Code: scan_for_numbered_subfolders() — main_folder_time_sensitive propagation
     Note: Entire bundle affected if ANY folder is time_sensitive
+
+26. 'CLICK SENSITIVE' TAGGED FOLDERS
+    Status: ✅ ACTIVE (If "click sensitive" in folder name)
+    Added: v3.18.32 | Fixed propagation: v3.18.39
+    Tag Detection: "click sensitive" anywhere in folder or main folder name (case-insensitive)
+    Behavior: ALL coordinate-changing features are disabled for this folder.
+    Features DISABLED when click-sensitive:
+      • Cursor transition path between files (no human-path movements)
+      • Mouse jitter (no random coord offsets)
+      • Idle cursor wandering (no movements during pauses)
+      • Distraction file insertion (distractions also move the cursor)
+    Features STILL ACTIVE:
+      • Within-file pauses (time-based, no coord changes)
+      • Pre-play buffer (timing only)
+      • Rapid click detection / drag protection
+    
+    Two Application Modes:
+      A) MAIN FOLDER TAGGED:
+         Example: "18- WC- draynor CLICK SENSITIVE/"
+         Result: ALL subfolders skip coordinate-changing features
+      B) INDIVIDUAL SUBFOLDER TAGGED:
+         Example: "18- WC- draynor/"
+                    └── 2 click sensitive- click tree/
+         Result: Only subfolder 2 is click-sensitive
+    
+    Accepted tag variants (all case-insensitive):
+      "click sensitive", "click/time sensitive", "click+time sensitive"
+    Purpose: Activities where cursor must stay at exact recorded coordinates
+             (e.g. fishing spots, precise clicks, inventory management)
+    Code: scan_for_numbered_subfolders(), apply_cycle_features(), string_cycle()
+
+27. 'CLICK/TIME SENSITIVE' COMBO TAG
+    Status: ✅ ACTIVE (Combines both tag rules)
+    Added: v3.18.32
+    Tag Detection: "click/time sensitive", "click+time sensitive", or
+                   "click time sensitive" in folder name (case-insensitive)
+    Behavior: Activates BOTH click-sensitive AND time-sensitive rules simultaneously:
+      • 1:1 raw:normal ratio (no inefficient files) — from time sensitive
+      • No cursor pathing, jitter, idle wandering, distractions — from click sensitive
+    Example: "Fishing experimental- click+time sensitive/"
+    Purpose: Precision timing activities where coordinates must also be exact
 
 12. 'DON'T USE FEATURES ON ME' TAGGED FOLDERS
     Status: ✅ ACTIVE (If folder name matches)
@@ -2475,11 +2516,15 @@ def scan_for_numbered_subfolders(base_path):
     unmodified_files = []
     non_json_files = []
     
-    # NEW: Check if MAIN FOLDER is tagged with "time sensitive"
-    # If so, ALL subfolders inside will be time_sensitive!
-    main_folder_time_sensitive = 'time sensitive' in base.name.lower()
+    # Check if MAIN FOLDER is tagged — propagates to ALL subfolders
+    _base_lower = base.name.lower()
+    main_folder_time_sensitive  = 'time sensitive'  in _base_lower
+    main_folder_click_sensitive = 'click sensitive' in _base_lower
+
     if main_folder_time_sensitive:
         print(f"  ⏱️  MAIN FOLDER is TIME SENSITIVE - All subfolders will skip inefficient files!")
+    if main_folder_click_sensitive:
+        print(f"  🖱️  MAIN FOLDER is CLICK SENSITIVE - All subfolders will skip cursor/jitter/idle/distraction features!")
     
     for item in base.iterdir():
         if not item.is_dir():
@@ -2551,6 +2596,9 @@ def scan_for_numbered_subfolders(base_path):
             if is_click_time_sensitive:
                 is_time_sensitive    = True
                 is_click_sensitive   = True
+            # Main folder tag propagates to all subfolders
+            if main_folder_click_sensitive:
+                is_click_sensitive = True
 
             # "optional/end" combo: optional folder that ends loop if chosen
             is_optional_end = is_optional and is_end
