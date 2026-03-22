@@ -177,6 +177,17 @@ STRING MACROS - FEATURE LIST
 ===========================================================================
 
 CHANGELOG (recent):
+- v3.18.45: Pre-play buffer now also fires between cycles (all file types).
+            ROOT CAUSE of click-through bug: add_file_to_cycle fires a 500-800ms
+            buffer between files WITHIN a cycle (when files_added > 0). But at
+            the boundary between cycle N and cycle N+1, files_added resets to 0
+            for the first file of the new cycle — no buffer fires. This left the
+            last DragEnd of cycle N and the cursor transition start of cycle N+1
+            at the exact same timestamp (0ms gap). The game reads simultaneous
+            DragEnd + MouseMove as cursor still held -> drag-click at wrong coords.
+            Fix: in the outer loop, if stringed_events is non-empty (not first cycle),
+            add a rng.uniform(500,800)ms gap to inter_cycle_pause for ALL file types
+            before appending the next cycle. Tracked in total_pre_file.
 - v3.18.44: Flat/single-subfolder always_first/last now wraps whole strung file.
             Previously string_cycle played always_first/last on EVERY cycle call,
             so a 50-cycle file had 50x [ALWAYS FIRST]...[ALWAYS LAST] pairs.
@@ -227,7 +238,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.44"
+VERSION = "v3.18.45"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2845,7 +2856,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.44"
+VERSION = "v3.18.45"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -6226,6 +6237,16 @@ def main():
                 
                 # Add INEFFICIENT Before File Pause (only for inefficient files, only if file >= 25 sec)
                 inter_cycle_pause = 0
+                if stringed_events:
+                    # PRE-PLAY BUFFER BETWEEN CYCLES (all file types)
+                    # The intra-cycle add_file_to_cycle buffer fires for files WITHIN a cycle,
+                    # but the very first file of each new cycle has files_added=0 so gets no buffer.
+                    # Without this, the last DragEnd of cycle N and the cursor transition of cycle
+                    # N+1 share the same timestamp -> the game reads them as simultaneous ->
+                    # cursor teleports while button is still held -> drag-click at wrong position.
+                    _cycle_gap = rng.uniform(500.0, 800.0)
+                    inter_cycle_pause += int(_cycle_gap)
+                    total_pre_file += _cycle_gap
                 if stringed_events and is_inef:
                     # Check file length: Only apply if file is >= 25 seconds (25000ms)
                     file_duration = cycle_duration  # Current cycle duration in ms
