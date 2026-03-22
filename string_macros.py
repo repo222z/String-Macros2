@@ -13,9 +13,13 @@ STRING MACROS - FEATURE LIST
 
 1. WITHIN-FILE PAUSES
    Files: Normal + Inef (Raw = 0%)
-   Value: % of each file own play time. Raw=0%, Normal=5%, Inef=15%
-   e.g. 20s Normal file -> 1.0s pause;  20s Inef file -> 3.0s pause
+   Value: random range drawn fresh per file (decimal, not rounded):
+     Normal: rng.uniform(2%, 5%)  e.g. 2.14%, 3.87%
+     Inef:   rng.uniform(10%, 15%)  e.g. 11.6%, 13.2%
+   e.g. 20s Normal file at 3.4% -> 0.68s pause
    One pause per file in middle 80%. Skips drags, rapid-clicks, pre-DragStart.
+   Additionally: 50% chance per cycle an extra mult-driven mid-event pause is
+   inserted at a random safe point (200-800ms * mult). See Feature 5.
 
 2. PRE-PLAY BUFFER
    Files: ALL
@@ -34,11 +38,17 @@ STRING MACROS - FEATURE LIST
    Safe zones: no drag, no rapid-click, not pre-DragStart, not first/last 10%.
 
 5. MULTIPLIER SYSTEM
-   Raw:    x 1.0 (50%) or x 1.1 (50%)
-   Normal: x 1.3 (65%) or x 1.5 (35%)
-   Inef:   x 2.0 (60%) or x 3.0 (40%)
-   Multiplies within-file pauses + massive pause. Does NOT multiply pre-play
-   buffer or inef before-file pause.
+   Continuous random range (decimal, not rounded):
+   Raw:    rng.uniform(1.0, 1.1)  e.g. 1.03, 1.07
+   Normal: rng.uniform(1.3, 1.5)  e.g. 1.33, 1.47
+   Inef:   rng.uniform(2.0, 3.0)  e.g. 2.14, 2.87
+   Applied to (baked in at generation time):
+     - Pre-play buffer: base 500-800ms * mult
+     - Cursor transition: base 200-400ms * mult
+     - Within-file pauses: file_duration * pct * (implicitly via step-3b)
+     - Massive pause: rng.uniform(240s,420s) * mult
+     - Mid-event random pause (50% chance): rng.uniform(200,800)ms * mult
+   NOT multiplied: inef before-file pause (10-30s flat), distraction files (flat)
 
 ===========================================================================
                     GROUP 2: PATTERN BREAKING
@@ -252,7 +262,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.47"
+VERSION = "v3.18.51"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -826,10 +836,14 @@ def insert_intra_file_pauses(events: list, rng: random.Random,
     if not events or len(events) < 5:
         return events, 0
 
-    pct_map = {'raw': 0.0, 'normal': 0.05, 'inef': 0.15}
-    pct = pct_map.get(file_type, 0.05)
-    if pct == 0.0:
+    # Raw = 0%, Normal = random in [2%, 5%], Inef = random in [10%, 15%]
+    # Drawn fresh each call — decimal, never rounded (e.g. 2.14%, 3.87%, 11.6%)
+    if file_type == 'raw':
         return events, 0
+    elif file_type == 'inef':
+        pct = rng.uniform(0.10, 0.15)
+    else:  # normal
+        pct = rng.uniform(0.02, 0.05)
 
     if protected_ranges is None:
         protected_ranges = []
@@ -1262,7 +1276,8 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
 def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                  distraction_files=None, distraction_chance=0.0,
                  is_click_sensitive=False,
-                 play_always_first=True, play_always_last=True):
+                 play_always_first=True, play_always_last=True,
+                 mult=1.0):
     """
     String one complete cycle (F1 -> F2 -> F3 -> ...) into a single unit.
     Returns raw events WITHOUT anti-detection features.
@@ -1327,10 +1342,10 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         # PRE-FILE PAUSE: 0.8 seconds BEFORE file plays (FLAT, NO multiplier)
         # This prevents drag issues when previous file ended with a click!
         if cycle_events:
-            # Random pause: 500-800ms, not rounded, calculated in ms
-            pre_file_pause = rng.uniform(500.0, 800.0)
+            # Random pause scaled by mult: base 500-800ms × mult
+            pre_file_pause = rng.uniform(500.0, 800.0) * mult
             timeline += pre_file_pause
-            
+
             # Track this pause
             total_pre_pause += pre_file_pause
             
@@ -1353,11 +1368,11 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
             # CURSOR TRANSITION: skipped for click-sensitive folders
             # (no coordinate changes between files - cursor stays wherever it was)
             if not is_click_sensitive:
-                transition_duration = int(rng.uniform(200, 400))
+                transition_duration = rng.uniform(200.0, 400.0) * mult
                 if last_x is not None and first_x is not None and (last_x != first_x or last_y != first_y):
                     transition_path = generate_human_path(
                         last_x, last_y, first_x, first_y,
-                        transition_duration, rng
+                        int(transition_duration), rng
                     )
                     for rel_time, x, y in transition_path:
                         cycle_events.append({
@@ -1367,7 +1382,7 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                             'Y': y
                         })
                     timeline += transition_duration
-                    total_transition_time += transition_duration
+                    total_transition_time += int(transition_duration)
                     # Final snap to exact start position
                     cycle_events.append({
                         'Type': 'MouseMove',
@@ -1980,7 +1995,7 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
     return written
 
 def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False,
-                          is_click_sensitive=False):
+                          is_click_sensitive=False, mult=1.0):
     """
     Apply anti-detection features to a complete cycle.
 
@@ -2019,13 +2034,39 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False,
     # Step 2: Rapid click detection
     protected_ranges = detect_rapid_click_sequences(events_with_jitter)
 
-    # Step 3: Within-file pause (percentage-based on each file's own duration)
-    #   Raw:  0%   Normal: 5%   Inefficient: 15%
+    # Step 3: Within-file pause (percentage-based, range chosen per call)
+    #   Raw: 0%   Normal: 2-5%   Inefficient: 10-15%
     file_type = 'raw' if is_raw else ('inef' if is_inef else 'normal')
     events_with_pauses, pause_time = insert_intra_file_pauses(
         events_with_jitter, rng, protected_ranges, file_type=file_type
     )
     stats['intra_pauses'] = pause_time
+
+    # Step 3b: Multiplier-driven random mid-event pause (50% chance per cycle)
+    # The multiplier can express itself as a short natural hesitation inserted
+    # directly between recorded events rather than only making buffers longer.
+    # Duration: rng.uniform(200, 800) * mult ms. Skipped for raw + click-sensitive.
+    if not is_raw and not is_click_sensitive and rng.random() < 0.50:
+        _mid_ms = rng.uniform(200.0, 800.0) * mult
+        _drag_idx = build_drag_index_set(events_with_pauses)
+        _p_set = set()
+        for _s, _e in protected_ranges:
+            for _k in range(_s, _e + 1):
+                _p_set.add(_k)
+        _fs = max(1, int(len(events_with_pauses) * 0.10))
+        _ls = min(len(events_with_pauses) - 1, int(len(events_with_pauses) * 0.90))
+        _valid = [
+            _i for _i in range(_fs, _ls)
+            if _i not in _p_set and _i not in _drag_idx
+            and events_with_pauses[_i].get('Type') != 'DragStart'
+            and (_i + 1 >= len(events_with_pauses)
+                 or events_with_pauses[_i + 1].get('Type') != 'DragStart')
+        ]
+        if _valid:
+            _ins = rng.choice(_valid)
+            for _j in range(_ins, len(events_with_pauses)):
+                events_with_pauses[_j]['Time'] = events_with_pauses[_j].get('Time', 0) + _mid_ms
+            stats['intra_pauses'] += _mid_ms
 
     # Step 4: Idle movements - SKIPPED for click-sensitive folders
     if not is_click_sensitive:
@@ -2871,7 +2912,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.47"
+VERSION = "v3.18.51"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -4084,10 +4125,14 @@ def insert_intra_file_pauses(events: list, rng: random.Random,
     if not events or len(events) < 5:
         return events, 0
 
-    pct_map = {'raw': 0.0, 'normal': 0.05, 'inef': 0.15}
-    pct = pct_map.get(file_type, 0.05)
-    if pct == 0.0:
+    # Raw = 0%, Normal = random in [2%, 5%], Inef = random in [10%, 15%]
+    # Drawn fresh each call — decimal, never rounded (e.g. 2.14%, 3.87%, 11.6%)
+    if file_type == 'raw':
         return events, 0
+    elif file_type == 'inef':
+        pct = rng.uniform(0.10, 0.15)
+    else:  # normal
+        pct = rng.uniform(0.02, 0.05)
 
     if protected_ranges is None:
         protected_ranges = []
@@ -4520,7 +4565,8 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
 def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                  distraction_files=None, distraction_chance=0.0,
                  is_click_sensitive=False,
-                 play_always_first=True, play_always_last=True):
+                 play_always_first=True, play_always_last=True,
+                 mult=1.0):
     """
     String one complete cycle (F1 -> F2 -> F3 -> ...) into a single unit.
     Returns raw events WITHOUT anti-detection features.
@@ -4585,10 +4631,10 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         # PRE-FILE PAUSE: 0.8 seconds BEFORE file plays (FLAT, NO multiplier)
         # This prevents drag issues when previous file ended with a click!
         if cycle_events:
-            # Random pause: 500-800ms, not rounded, calculated in ms
-            pre_file_pause = rng.uniform(500.0, 800.0)
+            # Random pause scaled by mult: base 500-800ms × mult
+            pre_file_pause = rng.uniform(500.0, 800.0) * mult
             timeline += pre_file_pause
-            
+
             # Track this pause
             total_pre_pause += pre_file_pause
             
@@ -4611,11 +4657,11 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
             # CURSOR TRANSITION: skipped for click-sensitive folders
             # (no coordinate changes between files - cursor stays wherever it was)
             if not is_click_sensitive:
-                transition_duration = int(rng.uniform(200, 400))
+                transition_duration = rng.uniform(200.0, 400.0) * mult
                 if last_x is not None and first_x is not None and (last_x != first_x or last_y != first_y):
                     transition_path = generate_human_path(
                         last_x, last_y, first_x, first_y,
-                        transition_duration, rng
+                        int(transition_duration), rng
                     )
                     for rel_time, x, y in transition_path:
                         cycle_events.append({
@@ -4625,7 +4671,7 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                             'Y': y
                         })
                     timeline += transition_duration
-                    total_transition_time += transition_duration
+                    total_transition_time += int(transition_duration)
                     # Final snap to exact start position
                     cycle_events.append({
                         'Type': 'MouseMove',
@@ -5238,7 +5284,7 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
     return written
 
 def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False,
-                          is_click_sensitive=False):
+                          is_click_sensitive=False, mult=1.0):
     """
     Apply anti-detection features to a complete cycle.
 
@@ -5277,13 +5323,39 @@ def apply_cycle_features(cycle_events, rng, is_raw, has_dmwm, is_inef=False,
     # Step 2: Rapid click detection
     protected_ranges = detect_rapid_click_sequences(events_with_jitter)
 
-    # Step 3: Within-file pause (percentage-based on each file's own duration)
-    #   Raw:  0%   Normal: 5%   Inefficient: 15%
+    # Step 3: Within-file pause (percentage-based, range chosen per call)
+    #   Raw: 0%   Normal: 2-5%   Inefficient: 10-15%
     file_type = 'raw' if is_raw else ('inef' if is_inef else 'normal')
     events_with_pauses, pause_time = insert_intra_file_pauses(
         events_with_jitter, rng, protected_ranges, file_type=file_type
     )
     stats['intra_pauses'] = pause_time
+
+    # Step 3b: Multiplier-driven random mid-event pause (50% chance per cycle)
+    # The multiplier can express itself as a short natural hesitation inserted
+    # directly between recorded events rather than only making buffers longer.
+    # Duration: rng.uniform(200, 800) * mult ms. Skipped for raw + click-sensitive.
+    if not is_raw and not is_click_sensitive and rng.random() < 0.50:
+        _mid_ms = rng.uniform(200.0, 800.0) * mult
+        _drag_idx = build_drag_index_set(events_with_pauses)
+        _p_set = set()
+        for _s, _e in protected_ranges:
+            for _k in range(_s, _e + 1):
+                _p_set.add(_k)
+        _fs = max(1, int(len(events_with_pauses) * 0.10))
+        _ls = min(len(events_with_pauses) - 1, int(len(events_with_pauses) * 0.90))
+        _valid = [
+            _i for _i in range(_fs, _ls)
+            if _i not in _p_set and _i not in _drag_idx
+            and events_with_pauses[_i].get('Type') != 'DragStart'
+            and (_i + 1 >= len(events_with_pauses)
+                 or events_with_pauses[_i + 1].get('Type') != 'DragStart')
+        ]
+        if _valid:
+            _ins = rng.choice(_valid)
+            for _j in range(_ins, len(events_with_pauses)):
+                events_with_pauses[_j]['Time'] = events_with_pauses[_j].get('Time', 0) + _mid_ms
+            stats['intra_pauses'] += _mid_ms
 
     # Step 4: Idle movements - SKIPPED for click-sensitive folders
     if not is_click_sensitive:
@@ -6149,19 +6221,20 @@ def main():
                 print(f"\n   File Type Assignments:")
             
             file_type_str = "RAW" if is_raw else ("INEFFICIENT" if is_inef else "NORMAL")
-            prefix_str = "^" if is_raw else ("??" if is_inef else "none")
+            prefix_str = "^" if is_raw else ("\u00ac\u00ac" if is_inef else "none")
             print(f"     {v_letter}: {file_type_str:12s} (prefix: {prefix_str})")
             
-            # Set multiplier (UPDATED v3.13.0)
+            # Set multiplier — continuous random range (not rounded), giving decimal values
+            # e.g. Normal picks anywhere in [1.3, 1.5] so 1.31, 1.44, 1.49, etc.
             if is_raw:
-                # Raw: x1.0 or x1.1 (50/50)
-                mult = rng.choices([1.0, 1.1], weights=[50, 50], k=1)[0]
+                # Raw: range 1.0 – 1.1  (e.g. 1.03, 1.07)
+                mult = round(rng.uniform(1.0, 1.1), 4)
             elif is_inef:
-                # Inefficient: x2.0 or x3.0 (60/40)
-                mult = rng.choices([2.0, 3.0], weights=[60, 40], k=1)[0]
+                # Inefficient: range 2.0 – 3.0  (e.g. 2.14, 2.87)
+                mult = round(rng.uniform(2.0, 3.0), 4)
             else:  # normal
-                # Normal: x1.3 or x1.5 (65/35)
-                mult = rng.choices([1.3, 1.5], weights=[65, 35], k=1)[0]
+                # Normal: range 1.3 – 1.5  (e.g. 1.33, 1.47)
+                mult = round(rng.uniform(1.3, 1.5), 4)
             
             # Build cycles until target reached
             stringed_events = []
@@ -6230,7 +6303,8 @@ def main():
                     distraction_chance=cycle_dist_chance,
                     is_click_sensitive=folder_is_click_sensitive,
                     play_always_first=_play_af,
-                    play_always_last=_play_al
+                    play_always_last=_play_al,
+                    mult=mult
                 )
                 _cycle_count += 1
                 
@@ -6244,7 +6318,7 @@ def main():
                 # APPLY FEATURES to ENTIRE cycle
                 cycle_with_features, stats = apply_cycle_features(
                     cycle_events, rng, is_raw, has_dmwm, is_inef=is_inef,
-                    is_click_sensitive=folder_is_click_sensitive
+                    is_click_sensitive=folder_is_click_sensitive, mult=mult
                 )
                 
                 # Check if adding would exceed target
@@ -6392,7 +6466,7 @@ def main():
             if is_raw:
                 prefix = "^"
             elif is_inef:
-                prefix = "??"
+                prefix = "\u00ac\u00ac"
             else:
                 prefix = ""
             
@@ -6465,64 +6539,47 @@ def main():
             separator = "=" * 40
             version_label = f"Version {prefix}{v_code}_{total_min}m{total_sec}s:"
             
+            # Compute totals for all three types
             if is_raw:
-                total_pause = total_inter + total_pre_file + total_transitions
-                original_inter = int(total_inter / mult) if mult > 0 else total_inter
-                
-                manifest_entry = [
-                    separator,
-                    "",
-                    version_label,
-                    f"FILE TYPE: Raw (no time-adding features, no chat)",
-                    f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
-                    f"BREAKDOWN before multiplier:",
-                    f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
-                    f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
-                    f"                - DISTRACTION File Pause: 0m 0s (Raw files - none inserted)",
-                    ""
-                ]
+                total_pause = total_pre_file + total_transitions
+                _intra_show = 0
+                _inter_show = 0
+                _massive_show = 0
             elif is_inef:
-                total_pause = total_intra + total_inter + total_pre_file + total_transitions + massive_pause_ms + total_dist_pause
-                original_intra = total_intra
                 original_inter = int(total_inter / mult) if mult > 0 else total_inter
-
-                manifest_entry = [
-                    separator,
-                    "",
-                    version_label,
-                    f"FILE TYPE: Inefficient",
-                    f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
-                    f"BREAKDOWN before multiplier:",
-                    f"                - Within File Pauses: {format_ms_precise(original_intra)}",
-                    f"                - INEFFICIENT Before File Pause: {format_ms_precise(original_inter)}",
-                    f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
-                    f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
-                    f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)} (incl. ~17-30s cooldowns between actions)",
-                    ""
-                ]
-                if massive_pause_ms > 0:
-                    manifest_entry.insert(-1, f"                - INEFFICIENT MASSIVE PAUSE: {format_ms_precise(massive_pause_ms)}")
+                total_pause = total_intra + total_pre_file + total_transitions + total_inter + massive_pause_ms + total_dist_pause
+                _intra_show = total_intra
+                _inter_show = total_inter
+                _massive_show = massive_pause_ms
             else:  # normal
-                total_pause = total_intra + total_inter + total_pre_file + total_transitions + total_dist_pause
-                original_intra = total_intra
-                original_inter = int(total_inter / mult) if mult > 0 else total_inter
+                total_pause = total_intra + total_pre_file + total_transitions + total_dist_pause
+                _intra_show = total_intra
+                _inter_show = 0
+                _massive_show = 0
 
-                manifest_entry = [
-                    separator,
-                    "",
-                    version_label,
-                    f"FILE TYPE: Normal",
-                    f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
-                    f"BREAKDOWN before multiplier:",
-                    f"                - Within File Pauses: {format_ms_precise(original_intra)}",
-                    f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
-                    f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
-                ]
-                if total_dist_pause > 0:
-                    manifest_entry.append(f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)} (incl. ~17-30s cooldowns between actions)")
-                else:
-                    manifest_entry.append(f"                - DISTRACTION File Pause: 0m 0s")
-                manifest_entry.append("")
+            file_type_label = "Raw" if is_raw else ("Inefficient" if is_inef else "Normal")
+            manifest_entry = [
+                separator,
+                "",
+                version_label,
+                f"FILE TYPE: {file_type_label}",
+                f"  Total PAUSE ADDED: {format_ms_precise(total_pause)} (x{mult} Multiplier)",
+                "",
+                f"BREAKDOWN before multiplier:",
+                f"                - PRE-Play Buffer: {format_ms_precise(total_pre_file)}",
+                f"                - Within File Pauses: {format_ms_precise(_intra_show)}",
+                f"                - CURSOR to Start Point: {format_ms_precise(total_transitions)}",
+                f"                - DISTRACTION File Pause: {format_ms_precise(total_dist_pause)}",
+                f"                - INEFFICIENT Before File Pause: {format_ms_precise(_inter_show)}",
+            ]
+            if _massive_show > 0:
+                massive_raw = int(_massive_show / mult) if mult > 0 else _massive_show
+                manifest_entry.append(
+                    f"                - INEFFICIENT MASSIVE PAUSE: {format_ms_precise(massive_raw)} (x{mult} applied = {format_ms_precise(_massive_show)})"
+                )
+            else:
+                manifest_entry.append(f"                - INEFFICIENT MASSIVE PAUSE: 0m 0s")
+            manifest_entry.append("")
             
             # Add file list with F#* prefix and cumulative timeline
             for folder_num, filename, is_dmwm, end_time in all_file_info_with_times:
