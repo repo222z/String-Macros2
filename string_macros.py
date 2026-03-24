@@ -262,7 +262,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.58"
+VERSION = "v3.18.59"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2553,7 +2553,7 @@ class ManualHistoryTracker:
             # Create signature (format folder numbers cleanly)
             signature = "|".join(
                 f"F{int(fn) if fn == int(fn) else fn}=" +
-                "+".join(fp.name for fp in (fl if isinstance(fl, list) else [fl]))
+                "+".join(fp.name if hasattr(fp, "name") else f"nested_{i}" for i, fp in enumerate(fl if isinstance(fl, list) else [fl]))
                 for fn, fl in combination
             )
             
@@ -3038,7 +3038,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.58"
+VERSION = "v3.18.59"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -5968,7 +5968,7 @@ class ManualHistoryTracker:
             # Create signature (format folder numbers cleanly)
             signature = "|".join(
                 f"F{int(fn) if fn == int(fn) else fn}=" +
-                "+".join(fp.name for fp in (fl if isinstance(fl, list) else [fl]))
+                "+".join(fp.name if hasattr(fp, "name") else f"nested_{i}" for i, fp in enumerate(fl if isinstance(fl, list) else [fl]))
                 for fn, fl in combination
             )
             
@@ -6549,7 +6549,7 @@ def main():
                 # Track this combination signature (format folder numbers cleanly)
                 combo_signature = "|".join(
                     f"F{int(fn) if fn == int(fn) else fn}=" +
-                    "+".join(fp.name for fp in (fl if isinstance(fl, list) else [fl]))
+                    "+".join(fp.name if hasattr(fp, "name") else f"nested_{i}" for i, fp in enumerate(fl if isinstance(fl, list) else [fl]))
                     for fn, fl in combo
                 )
                 folder_combinations_used.append(combo_signature)
