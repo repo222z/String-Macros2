@@ -220,4 +220,4 @@ jobs:
         with:
           name: stringed_macros_bundle_${{ env.BUNDLE_SEQ }}
           path: ${{ env.FINAL_ZIP }}
-          retention-days: 90
+          retention-days: 1
