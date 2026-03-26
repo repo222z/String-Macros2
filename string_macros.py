@@ -321,7 +321,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.64"
+VERSION = "v3.18.65"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -3213,7 +3213,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.64"
+VERSION = "v3.18.65"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -6779,6 +6779,14 @@ def main():
                 # Normal: range 1.3 – 1.5  (e.g. 1.33, 1.47)
                 mult = round(rng.uniform(1.5, 1.7), 4)
             
+            # Per-version target: ±5 minutes random variance around base target
+            # Each version independently drawn — decimal ms, never rounded
+            _variance_ms = rng.uniform(-5 * 60000, 5 * 60000)
+            target_ms = _base_target_ms + _variance_ms
+            _t_min = int(target_ms // 60000)
+            _t_sec = int((target_ms % 60000) / 1000)
+            print(f"     {v_letter}: target = {_t_min}m {_t_sec}s (base {args.target_minutes}m ± 5m)")
+
             # Build cycles until target reached
             stringed_events = []
             all_file_info_with_times = []  # List of (folder_num, filename, is_dmwm, end_time) tuples
