@@ -27,6 +27,14 @@ STRING MACROS - FEATURE LIST
    the last DragEnd of one cycle and the cursor transition of the next,
    which caused drag-click at wrong position.
 
+2b. PER-VERSION TARGET DURATION VARIANCE
+    Each version gets a random target duration of base +/- 5 minutes.
+    e.g. --target-minutes 60 produces versions targeting 55-65 min each.
+    Drawn as rng.uniform(-300000, +300000) ms float per version.
+    The effective target (used by the build loop) uses this per-version value.
+    Inef massive pause budget is also pre-sampled against the per-version target.
+    Shown in print output: "Target: 62m 14s (base 60m +2.2m)"
+
 3. INEF BEFORE-FILE PAUSE
    Files: Inef only, only if current cycle >= 25s
    Value: rng.uniform(10000, 30000) ms flat (no mult)
@@ -321,7 +329,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.65"
+VERSION = "v3.18.67"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -1334,6 +1342,15 @@ def insert_massive_pause(events: list, rng: random.Random, mult: float = 1.0) ->
 # STRING PARTS WITH ANTI-DETECTION
 # ============================================================================
 
+def _pick_af_al(pool, rng):
+    """Pick one always_first/last file randomly from a list/pool.
+    Returns None if pool is empty or None. Accepts a single Path for backwards compat."""
+    if not pool:
+        return None
+    if not isinstance(pool, list):
+        return pool   # already a single Path (nested dicts etc.)
+    return rng.choice(pool)
+
 def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                  distraction_files=None, distraction_chance=0.0,
                  is_click_sensitive=False,
@@ -1495,8 +1512,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         # There is only one folder_num - grab its always_first/last once
         only_folder_num = next(iter(subfolder_files))
         only_folder_data = subfolder_files[only_folder_num]
-        single_always_first = only_folder_data.get('always_first')
-        single_always_last  = only_folder_data.get('always_last')
+        single_always_first = _pick_af_al(only_folder_data.get('always_first', []), rng)
+        single_always_last  = _pick_af_al(only_folder_data.get('always_last',  []), rng)
         # Play always_first only when flagged (outer loop controls first-cycle)
         if single_always_first and play_always_first:
             is_dmwm = single_always_first in dmwm_file_set
@@ -1528,8 +1545,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
             _sfd = _nsf.get(_sfn, {})
             if not isinstance(_sfl, list):
                 _sfl = [_sfl]
-            _saf = _sfd.get('always_first')
-            _sal = _sfd.get('always_last')
+            _saf = _pick_af_al(_sfd.get('always_first', []), rng)
+            _sal = _pick_af_al(_sfd.get('always_last',  []), rng)
             if _saf:
                 _is_dmwm = _saf in dmwm_file_set
                 add_file_to_cycle(_saf, _sfn, _is_dmwm, f"[ALWAYS FIRST] {_saf.name}")
@@ -1550,8 +1567,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         """
         if not nested_items_list:
             return
-        _naf = nested_items_list[0].get('nested_root_af')
-        _nal = nested_items_list[0].get('nested_root_al')
+        _naf = _pick_af_al(nested_items_list[0].get('nested_root_af', []), rng)
+        _nal = _pick_af_al(nested_items_list[0].get('nested_root_al', []), rng)
         if _naf:
             _is_dmwm = _naf in dmwm_file_set
             add_file_to_cycle(_naf, 0.0, _is_dmwm, f"[ALWAYS FIRST] {_naf.name}")
@@ -1583,8 +1600,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                 add_file_to_cycle(item, folder_num, is_dmwm, item.name)
         else:
             # Multi-subfolder: always_first/last wrap ONLY the files of their OWN folder.
-            af = folder_data.get('always_first')
-            al = folder_data.get('always_last')
+            af = _pick_af_al(folder_data.get('always_first', []), rng)
+            al = _pick_af_al(folder_data.get('always_last',  []), rng)
             if af:
                 is_dmwm = af in dmwm_file_set
                 add_file_to_cycle(af, folder_num, is_dmwm, f"[ALWAYS FIRST] {af.name}")
@@ -2271,20 +2288,23 @@ def scan_for_numbered_subfolders(base_path):
             all_json_files = sorted(item.glob("*.json"))
             
             # Separate "always first", "always last", and regular files
-            always_first = None
-            always_last = None
+            # Collect ALL always_first/last variants into pools — one is chosen randomly per run
+            always_first_pool = []
+            always_last_pool  = []
             regular_files = []
-            
+
             for json_file in all_json_files:
                 filename_lower = json_file.name.lower()
                 if 'always first' in filename_lower or 'alwaysfirst' in filename_lower:
-                    always_first = json_file
+                    always_first_pool.append(json_file)
                     print(f"   Found 'always first' in folder {folder_num}: {json_file.name}")
                 elif 'always last' in filename_lower or 'alwayslast' in filename_lower:
-                    always_last = json_file
+                    always_last_pool.append(json_file)
                     print(f"   Found 'always last' in folder {folder_num}: {json_file.name}")
                 else:
                     regular_files.append(json_file)
+            always_first = always_first_pool  # store list; caller picks one randomly
+            always_last  = always_last_pool
             
             # Check if folder is "optional" (default 24-33%, or custom % from tag)
             is_optional = 'optional' in item.name.lower()
@@ -2375,19 +2395,21 @@ def scan_for_numbered_subfolders(base_path):
         
         if direct_json:
             # Separate always_first / always_last from regular files
-            always_first = None
-            always_last = None
+            always_first_pool = []
+            always_last_pool  = []
             regular_files = []
             for json_file in direct_json:
                 name_lower = json_file.name.lower()
                 if 'always first' in name_lower or 'alwaysfirst' in name_lower:
-                    always_first = json_file
+                    always_first_pool.append(json_file)
                     print(f"   Found 'always first': {json_file.name}")
                 elif 'always last' in name_lower or 'alwayslast' in name_lower:
-                    always_last = json_file
+                    always_last_pool.append(json_file)
                     print(f"   Found 'always last': {json_file.name}")
                 else:
                     regular_files.append(json_file)
+            always_first = always_first_pool
+            always_last  = always_last_pool
             
             if regular_files:
                 print(f"   Flat folder detected - {len(regular_files)} file(s) treated as single pool (subfolder 1.0)")
@@ -2406,16 +2428,16 @@ def scan_for_numbered_subfolders(base_path):
     # Scan root-level JSON files for always_first / always_last even when
     # numbered subfolders exist. These wrap the ENTIRE strung file once —
     # not per cycle, not per subfolder. Separate from subfolder-level always tags.
-    root_always_first = None
-    root_always_last  = None
+    root_always_first = []
+    root_always_last  = []
     if numbered_folders:  # only meaningful when there are actual subfolders
         for _rf in sorted(base.glob('*.json')):
             _name = _rf.name.lower()
             if 'always first' in _name or 'alwaysfirst' in _name:
-                root_always_first = _rf
+                root_always_first.append(_rf)
                 print(f"  Found root-level 'always first': {_rf.name}")
             elif 'always last' in _name or 'alwayslast' in _name:
-                root_always_last = _rf
+                root_always_last.append(_rf)
                 print(f"  Found root-level 'always last': {_rf.name}")
 
     # Add unmodified files to their respective numbered folder pools
@@ -3213,7 +3235,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.65"
+VERSION = "v3.18.67"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -5026,8 +5048,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         # There is only one folder_num - grab its always_first/last once
         only_folder_num = next(iter(subfolder_files))
         only_folder_data = subfolder_files[only_folder_num]
-        single_always_first = only_folder_data.get('always_first')
-        single_always_last  = only_folder_data.get('always_last')
+        single_always_first = _pick_af_al(only_folder_data.get('always_first', []), rng)
+        single_always_last  = _pick_af_al(only_folder_data.get('always_last',  []), rng)
         # Play always_first only when flagged (outer loop controls first-cycle)
         if single_always_first and play_always_first:
             is_dmwm = single_always_first in dmwm_file_set
@@ -5059,8 +5081,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
             _sfd = _nsf.get(_sfn, {})
             if not isinstance(_sfl, list):
                 _sfl = [_sfl]
-            _saf = _sfd.get('always_first')
-            _sal = _sfd.get('always_last')
+            _saf = _pick_af_al(_sfd.get('always_first', []), rng)
+            _sal = _pick_af_al(_sfd.get('always_last',  []), rng)
             if _saf:
                 _is_dmwm = _saf in dmwm_file_set
                 add_file_to_cycle(_saf, _sfn, _is_dmwm, f"[ALWAYS FIRST] {_saf.name}")
@@ -5081,8 +5103,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
         """
         if not nested_items_list:
             return
-        _naf = nested_items_list[0].get('nested_root_af')
-        _nal = nested_items_list[0].get('nested_root_al')
+        _naf = _pick_af_al(nested_items_list[0].get('nested_root_af', []), rng)
+        _nal = _pick_af_al(nested_items_list[0].get('nested_root_al', []), rng)
         if _naf:
             _is_dmwm = _naf in dmwm_file_set
             add_file_to_cycle(_naf, 0.0, _is_dmwm, f"[ALWAYS FIRST] {_naf.name}")
@@ -5114,8 +5136,8 @@ def string_cycle(subfolder_files, combination, rng, dmwm_file_set=set(),
                 add_file_to_cycle(item, folder_num, is_dmwm, item.name)
         else:
             # Multi-subfolder: always_first/last wrap ONLY the files of their OWN folder.
-            af = folder_data.get('always_first')
-            al = folder_data.get('always_last')
+            af = _pick_af_al(folder_data.get('always_first', []), rng)
+            al = _pick_af_al(folder_data.get('always_last',  []), rng)
             if af:
                 is_dmwm = af in dmwm_file_set
                 add_file_to_cycle(af, folder_num, is_dmwm, f"[ALWAYS FIRST] {af.name}")
@@ -5802,20 +5824,23 @@ def scan_for_numbered_subfolders(base_path):
             all_json_files = sorted(item.glob("*.json"))
             
             # Separate "always first", "always last", and regular files
-            always_first = None
-            always_last = None
+            # Collect ALL always_first/last variants into pools — one is chosen randomly per run
+            always_first_pool = []
+            always_last_pool  = []
             regular_files = []
-            
+
             for json_file in all_json_files:
                 filename_lower = json_file.name.lower()
                 if 'always first' in filename_lower or 'alwaysfirst' in filename_lower:
-                    always_first = json_file
+                    always_first_pool.append(json_file)
                     print(f"   Found 'always first' in folder {folder_num}: {json_file.name}")
                 elif 'always last' in filename_lower or 'alwayslast' in filename_lower:
-                    always_last = json_file
+                    always_last_pool.append(json_file)
                     print(f"   Found 'always last' in folder {folder_num}: {json_file.name}")
                 else:
                     regular_files.append(json_file)
+            always_first = always_first_pool  # store list; caller picks one randomly
+            always_last  = always_last_pool
             
             # Check if folder is "optional" (default 24-33%, or custom % from tag)
             is_optional = 'optional' in item.name.lower()
@@ -5906,19 +5931,21 @@ def scan_for_numbered_subfolders(base_path):
         
         if direct_json:
             # Separate always_first / always_last from regular files
-            always_first = None
-            always_last = None
+            always_first_pool = []
+            always_last_pool  = []
             regular_files = []
             for json_file in direct_json:
                 name_lower = json_file.name.lower()
                 if 'always first' in name_lower or 'alwaysfirst' in name_lower:
-                    always_first = json_file
+                    always_first_pool.append(json_file)
                     print(f"   Found 'always first': {json_file.name}")
                 elif 'always last' in name_lower or 'alwayslast' in name_lower:
-                    always_last = json_file
+                    always_last_pool.append(json_file)
                     print(f"   Found 'always last': {json_file.name}")
                 else:
                     regular_files.append(json_file)
+            always_first = always_first_pool
+            always_last  = always_last_pool
             
             if regular_files:
                 print(f"   Flat folder detected - {len(regular_files)} file(s) treated as single pool (subfolder 1.0)")
@@ -5937,16 +5964,16 @@ def scan_for_numbered_subfolders(base_path):
     # Scan root-level JSON files for always_first / always_last even when
     # numbered subfolders exist. These wrap the ENTIRE strung file once —
     # not per cycle, not per subfolder. Separate from subfolder-level always tags.
-    root_always_first = None
-    root_always_last  = None
+    root_always_first = []
+    root_always_last  = []
     if numbered_folders:  # only meaningful when there are actual subfolders
         for _rf in sorted(base.glob('*.json')):
             _name = _rf.name.lower()
             if 'always first' in _name or 'alwaysfirst' in _name:
-                root_always_first = _rf
+                root_always_first.append(_rf)
                 print(f"  Found root-level 'always first': {_rf.name}")
             elif 'always last' in _name or 'alwayslast' in _name:
-                root_always_last = _rf
+                root_always_last.append(_rf)
                 print(f"  Found root-level 'always last': {_rf.name}")
 
     # Add unmodified files to their respective numbered folder pools
@@ -6638,6 +6665,7 @@ def main():
         )
         target_ms = args.target_minutes * 60000
         
+        _base_target_ms = target_ms  # base for per-version +-5min variance
         # Track all combinations used in THIS RUN for this folder
         folder_combinations_used = []
         
@@ -6814,15 +6842,16 @@ def main():
             # The loop uses (target_ms - massive_pause_budget) as its effective ceiling.
             if is_inef:
                 _expected_massive_ms = int(rng.uniform(240000.0, 420000.0))  # no mult
-                _effective_target = max(target_ms - _expected_massive_ms, target_ms // 4)
+                _effective_target = max(version_target_ms - _expected_massive_ms, version_target_ms // 4)
             else:
                 _expected_massive_ms = 0
-                _effective_target = target_ms
+                _effective_target = version_target_ms
 
             # ROOT-LEVEL always_first: play ONCE before all cycles (not per cycle)
-            if root_always_first:
+            _picked_raf = _pick_af_al(root_always_first, rng)
+            if _picked_raf:
                 try:
-                    _raf_events = json.load(open(root_always_first, encoding='utf-8'))
+                    _raf_events = json.load(open(_picked_raf, encoding='utf-8'))
                     _raf_events = filter_problematic_keys(_raf_events)
                     if _raf_events:
                         _raf_base = min(e.get('Time', 0) for e in _raf_events)
@@ -6832,8 +6861,8 @@ def main():
                             stringed_events.append(_ne)
                         _raf_end = stringed_events[-1]['Time']
                         all_file_info_with_times.append(
-                            (0.0, f"[ALWAYS FIRST] {root_always_first.name}",
-                             root_always_first in dmwm_file_set, _raf_end)
+                            (0.0, f"[ALWAYS FIRST] {_picked_raf.name}",
+                             _picked_raf in dmwm_file_set, _raf_end)
                         )
                         # Advance timeline tracker so first cycle gets proper buffer
                         total_pre_file += rng.uniform(500.0, 800.0) * mult
@@ -6984,7 +7013,7 @@ def main():
             if _is_flat_folder and stringed_events:
                 _only_fn  = next(iter(subfolder_files))
                 _only_fd  = subfolder_files[_only_fn]
-                _al_file  = _only_fd.get('always_last')
+                _al_file  = _pick_af_al(_only_fd.get('always_last', []), rng)
                 if _al_file:
                     _al_events = json.load(open(_al_file, encoding='utf-8'))
                     _al_events = filter_problematic_keys(_al_events)
@@ -7006,9 +7035,10 @@ def main():
                         )
 
             # ROOT-LEVEL always_last: play ONCE after all cycles
-            if root_always_last and stringed_events:
+            _picked_ral = _pick_af_al(root_always_last, rng)
+            if _picked_ral and stringed_events:
                 try:
-                    _ral_events = json.load(open(root_always_last, encoding='utf-8'))
+                    _ral_events = json.load(open(_picked_ral, encoding='utf-8'))
                     _ral_events = filter_problematic_keys(_ral_events)
                     if _ral_events:
                         _ral_base  = min(e.get('Time', 0) for e in _ral_events)
@@ -7021,8 +7051,8 @@ def main():
                             stringed_events.append(_ne)
                         _ral_end = stringed_events[-1]['Time']
                         all_file_info_with_times.append(
-                            (0.0, f"[ALWAYS LAST] {root_always_last.name}",
-                             root_always_last in dmwm_file_set, _ral_end)
+                            (0.0, f"[ALWAYS LAST] {_picked_ral.name}",
+                             _picked_ral in dmwm_file_set, _ral_end)
                         )
                 except Exception as _e:
                     print(f"  [!] Root always_last load error: {_e}")
