@@ -321,7 +321,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.63"
+VERSION = "v3.18.64"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2352,6 +2352,8 @@ def scan_for_numbered_subfolders(base_path):
                     'nested_subfolder_files': nested_subfolder_files,
                     'nested_root_always_first': nested_root_af,
                     'nested_root_always_last': nested_root_al,
+                    'folder_name': item.name,   # stored for name-lookup in specific-folders
+                    'folder_path': item,
                 }
 
             # Also collect non-JSON files from numbered folders
@@ -2921,16 +2923,21 @@ def main():
                         if sf_filter:
                             # Keep only the requested numbered subfolders
                             original_subs = folder_data['subfolders']
-                            filtered_subs = {
-                                num: data for num, data in original_subs.items()
-                                if round(num, 4) in sf_filter or num == 0  # keep dmwm (0)
-                            }
+                            filtered_subs = {}
+                            for num, data in original_subs.items():
+                                if round(num, 4) in sf_filter or num == 0:
+                                    # Force-include: strip optional/end so it always runs
+                                    forced = dict(data)
+                                    forced['is_optional']     = False
+                                    forced['is_end']          = False
+                                    forced['is_optional_end'] = False
+                                    filtered_subs[num] = forced
                             if not filtered_subs:
                                 print(f"  [!] No matching subfolders found in '{folder_data['name']}'")
                                 print(f"      Requested: {sorted(sf_filter)}")
                                 print(f"      Available: {sorted(k for k in original_subs if k != 0)}")
                                 continue
-                            # Clone folder_data with filtered subfolders
+                            # Clone folder_data with filtered+forced subfolders
                             filtered_fd = dict(folder_data)
                             filtered_fd['subfolders'] = filtered_subs
                             filtered_folders.append(filtered_fd)
@@ -2938,19 +2945,54 @@ def main():
                             filtered_folders.append(folder_data)
 
                 if not filtered_folders:
+                    # Fallback: search by subfolder name (no colon needed)
+                    # If the written name matches a subfolder folder_name, auto-promote it
+                    for folder_data in main_folders:
+                        for sf_num, sf_data in folder_data['subfolders'].items():
+                            sf_name = sf_data.get('folder_name', '')
+                            if sf_name.lower() in entries:
+                                print(f"  [->] '{sf_name}' matched as subfolder of '{folder_data['name']}'")
+                                # Build a synthetic main_folder from this single subfolder
+                                # Force always-included (strip optional/end tags)
+                                forced_sf = dict(sf_data)
+                                forced_sf['is_optional']     = False
+                                forced_sf['is_end']          = False
+                                forced_sf['is_optional_end'] = False
+                                forced_sf['max_files']       = 1  # ignored — nested handles loops
+
+                                nsf = sf_data.get('nested_subfolder_files')
+                                if nsf:
+                                    # Nested: promote inner structure as top-level
+                                    synthetic = {
+                                        'path': sf_data.get('folder_path', folder_data['path']),
+                                        'name': sf_name,
+                                        'root_always_first': sf_data.get('nested_root_always_first'),
+                                        'root_always_last':  sf_data.get('nested_root_always_last'),
+                                        'subfolders': nsf,
+                                        'dmwm_files': folder_data.get('dmwm_files', set()),
+                                        'non_json':   folder_data.get('non_json', []),
+                                    }
+                                else:
+                                    # Regular subfolder: treat as flat/single-subfolder folder
+                                    synthetic = {
+                                        'path': sf_data.get('folder_path', folder_data['path']),
+                                        'name': sf_name,
+                                        'root_always_first': sf_data.get('always_first'),
+                                        'root_always_last':  sf_data.get('always_last'),
+                                        'subfolders': {sf_num: forced_sf},
+                                        'dmwm_files': folder_data.get('dmwm_files', set()),
+                                        'non_json':   folder_data.get('non_json', []),
+                                    }
+                                filtered_folders.append(synthetic)
+
+                if not filtered_folders:
                     print(f"\n[X] None of the specified folders were found!")
                     print(f"   Looking for: {list(entries.keys())}")
-                    print(f"   Available:   {[f['name'] for f in main_folders]}")
-                    # Check if any requested name matches a SUBFOLDER name — common mistake
-                    print(f"\n   HINT: Did you mean a subfolder inside a main folder?")
-                    print(f"   Subfolder names cannot be used directly as top-level entries.")
-                    print(f"   Use the colon format to target specific subfolders:")
-                    print(f"     MainFolderName: F1, F2      <- only run F1 and F2")
-                    print(f"     MainFolderName: F1-F3       <- only run F1 through F3")
-                    print(f"     MainFolderName: F0.5        <- only run subfolder 0.5")
-                    print(f"\n   Nested subfolders (e.g. F0.5 that has its own F1/F2 inside)")
-                    print(f"   are also addressed the same way:")
-                    print(f"     22- Craft Dia: F0.5         <- run only the nested F0.5 block")
+                    print(f"   Available main folders: {[f['name'] for f in main_folders]}")
+                    print(f"   TIP: You can also write a subfolder name directly:")
+                    print(f"     F0.5 optional-7- CAM2       <- auto-found inside any main folder")
+                    print(f"   Or use colon format to specify parent:")
+                    print(f"     22- Craft Dia: F0.5         <- explicit parent + subfolder")
                     sys.exit(1)
 
                 main_folders = filtered_folders
@@ -3171,7 +3213,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.63"
+VERSION = "v3.18.64"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -5841,6 +5883,8 @@ def scan_for_numbered_subfolders(base_path):
                     'nested_subfolder_files': nested_subfolder_files,
                     'nested_root_always_first': nested_root_af,
                     'nested_root_always_last': nested_root_al,
+                    'folder_name': item.name,   # stored for name-lookup in specific-folders
+                    'folder_path': item,
                 }
 
             # Also collect non-JSON files from numbered folders
@@ -6410,16 +6454,21 @@ def main():
                         if sf_filter:
                             # Keep only the requested numbered subfolders
                             original_subs = folder_data['subfolders']
-                            filtered_subs = {
-                                num: data for num, data in original_subs.items()
-                                if round(num, 4) in sf_filter or num == 0  # keep dmwm (0)
-                            }
+                            filtered_subs = {}
+                            for num, data in original_subs.items():
+                                if round(num, 4) in sf_filter or num == 0:
+                                    # Force-include: strip optional/end so it always runs
+                                    forced = dict(data)
+                                    forced['is_optional']     = False
+                                    forced['is_end']          = False
+                                    forced['is_optional_end'] = False
+                                    filtered_subs[num] = forced
                             if not filtered_subs:
                                 print(f"  [!] No matching subfolders found in '{folder_data['name']}'")
                                 print(f"      Requested: {sorted(sf_filter)}")
                                 print(f"      Available: {sorted(k for k in original_subs if k != 0)}")
                                 continue
-                            # Clone folder_data with filtered subfolders
+                            # Clone folder_data with filtered+forced subfolders
                             filtered_fd = dict(folder_data)
                             filtered_fd['subfolders'] = filtered_subs
                             filtered_folders.append(filtered_fd)
@@ -6427,19 +6476,54 @@ def main():
                             filtered_folders.append(folder_data)
 
                 if not filtered_folders:
+                    # Fallback: search by subfolder name (no colon needed)
+                    # If the written name matches a subfolder folder_name, auto-promote it
+                    for folder_data in main_folders:
+                        for sf_num, sf_data in folder_data['subfolders'].items():
+                            sf_name = sf_data.get('folder_name', '')
+                            if sf_name.lower() in entries:
+                                print(f"  [->] '{sf_name}' matched as subfolder of '{folder_data['name']}'")
+                                # Build a synthetic main_folder from this single subfolder
+                                # Force always-included (strip optional/end tags)
+                                forced_sf = dict(sf_data)
+                                forced_sf['is_optional']     = False
+                                forced_sf['is_end']          = False
+                                forced_sf['is_optional_end'] = False
+                                forced_sf['max_files']       = 1  # ignored — nested handles loops
+
+                                nsf = sf_data.get('nested_subfolder_files')
+                                if nsf:
+                                    # Nested: promote inner structure as top-level
+                                    synthetic = {
+                                        'path': sf_data.get('folder_path', folder_data['path']),
+                                        'name': sf_name,
+                                        'root_always_first': sf_data.get('nested_root_always_first'),
+                                        'root_always_last':  sf_data.get('nested_root_always_last'),
+                                        'subfolders': nsf,
+                                        'dmwm_files': folder_data.get('dmwm_files', set()),
+                                        'non_json':   folder_data.get('non_json', []),
+                                    }
+                                else:
+                                    # Regular subfolder: treat as flat/single-subfolder folder
+                                    synthetic = {
+                                        'path': sf_data.get('folder_path', folder_data['path']),
+                                        'name': sf_name,
+                                        'root_always_first': sf_data.get('always_first'),
+                                        'root_always_last':  sf_data.get('always_last'),
+                                        'subfolders': {sf_num: forced_sf},
+                                        'dmwm_files': folder_data.get('dmwm_files', set()),
+                                        'non_json':   folder_data.get('non_json', []),
+                                    }
+                                filtered_folders.append(synthetic)
+
+                if not filtered_folders:
                     print(f"\n[X] None of the specified folders were found!")
                     print(f"   Looking for: {list(entries.keys())}")
-                    print(f"   Available:   {[f['name'] for f in main_folders]}")
-                    # Check if any requested name matches a SUBFOLDER name — common mistake
-                    print(f"\n   HINT: Did you mean a subfolder inside a main folder?")
-                    print(f"   Subfolder names cannot be used directly as top-level entries.")
-                    print(f"   Use the colon format to target specific subfolders:")
-                    print(f"     MainFolderName: F1, F2      <- only run F1 and F2")
-                    print(f"     MainFolderName: F1-F3       <- only run F1 through F3")
-                    print(f"     MainFolderName: F0.5        <- only run subfolder 0.5")
-                    print(f"\n   Nested subfolders (e.g. F0.5 that has its own F1/F2 inside)")
-                    print(f"   are also addressed the same way:")
-                    print(f"     22- Craft Dia: F0.5         <- run only the nested F0.5 block")
+                    print(f"   Available main folders: {[f['name'] for f in main_folders]}")
+                    print(f"   TIP: You can also write a subfolder name directly:")
+                    print(f"     F0.5 optional-7- CAM2       <- auto-found inside any main folder")
+                    print(f"   Or use colon format to specify parent:")
+                    print(f"     22- Craft Dia: F0.5         <- explicit parent + subfolder")
                     sys.exit(1)
 
                 main_folders = filtered_folders
