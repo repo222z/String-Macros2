@@ -329,7 +329,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.68"
+VERSION = "v3.18.69"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -2124,7 +2124,7 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
         total_min = total_ms // 60000
         total_sec = (total_ms % 60000) // 1000
         fname     = f"DISTRACTION_{str(i+1).zfill(2)}_{total_min}m{total_sec}s.json"
-        (out_folder / fname).write_text(json.dumps(events, indent=2))
+        (out_folder / fname).write_text(json.dumps(events, separators=(',', ':')))
         written += 1
 
     return written
@@ -3235,7 +3235,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.68"
+VERSION = "v3.18.69"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -5660,7 +5660,7 @@ def generate_distraction_files(distractions_src_folder, out_folder, rng,
         total_min = total_ms // 60000
         total_sec = (total_ms % 60000) // 1000
         fname     = f"DISTRACTION_{str(i+1).zfill(2)}_{total_min}m{total_sec}s.json"
-        (out_folder / fname).write_text(json.dumps(events, indent=2))
+        (out_folder / fname).write_text(json.dumps(events, separators=(',', ':')))
         written += 1
 
     return written
@@ -7154,7 +7154,7 @@ def main():
                     print(f"     [!]?  Chat insert failed: {chat_err}")
             
             # Save file
-            (out_folder / fname).write_text(json.dumps(stringed_events, indent=2))
+            (out_folder / fname).write_text(json.dumps(stringed_events, separators=(',', ':')))
             
             # DEBUG: Show created file
             type_label = "RAW" if is_raw else ("INEF" if is_inef else "NORM")
