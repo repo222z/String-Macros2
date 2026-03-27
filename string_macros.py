@@ -329,7 +329,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.69"
+VERSION = "v3.18.70"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -3235,7 +3235,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.69"
+VERSION = "v3.18.70"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -6897,8 +6897,14 @@ def main():
                     cycle_dist_chance = folder_dist_chance_normal
                 # Flat/single-subfolder: always_first only on cycle 0,
                 # always_last suppressed here (injected once after loop ends)
-                _play_af = (not _is_flat_folder) or (_cycle_count == 0)
-                _play_al = not _is_flat_folder   # always_last injected after loop
+                # If root_always_first/last are set, they fire in the outer loop
+                # (before/after the while True). Suppress subfolder-level always_first/last
+                # to prevent double-firing for flat folders where both scanners find the
+                # same files.
+                _has_root_af = bool(root_always_first)
+                _has_root_al = bool(root_always_last)
+                _play_af = ((not _is_flat_folder) or (_cycle_count == 0)) and not _has_root_af
+                _play_al = (not _is_flat_folder) and not _has_root_al   # always_last injected after loop
                 cycle_result = string_cycle(
                     subfolder_files, combo, rng, dmwm_file_set,
                     distraction_files=dist_queue,
