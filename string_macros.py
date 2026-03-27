@@ -329,7 +329,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.70"
+VERSION = "v3.18.73"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -3167,9 +3167,29 @@ def main():
             _fn_label = str(int(_fn) if _fn == int(_fn) else _fn)
             _file_count = len(_fd.get('files', []))
             _always_note = ""
-            if _fd.get('always_first'): _always_note += " + always_first"
-            if _fd.get('always_last'):  _always_note += " + always_last"
-            _subfolder_lines.append(f"  F{_fn_label}: {_file_count} file(s){_always_note}")
+            # always_first/last are now pools (lists) — show count if > 1
+            _af_pool = _fd.get('always_first', [])
+            _al_pool = _fd.get('always_last',  [])
+            if _af_pool:
+                _af_count = len(_af_pool) if isinstance(_af_pool, list) else 1
+                _always_note += f" + always_first({_af_count})" if _af_count > 1 else " + always_first"
+            if _al_pool:
+                _al_count = len(_al_pool) if isinstance(_al_pool, list) else 1
+                _always_note += f" + always_last({_al_count})" if _al_count > 1 else " + always_last"
+            # Nested subfolder: show sub-folder count instead of 0 files
+            _nsf = _fd.get('nested_subfolder_files')
+            if _nsf:
+                _nested_count = len(_nsf)
+                # Show per-sub-subfolder file counts
+                _nested_parts = []
+                for _nfn in sorted(_nsf.keys()):
+                    _nfd = _nsf[_nfn]
+                    _nfn_label = str(int(_nfn) if _nfn == int(_nfn) else _nfn)
+                    _nfile_count = len(_nfd.get('files', []))
+                    _nested_parts.append(f"F{_nfn_label}:{_nfile_count}")
+                _subfolder_lines.append(f"  F{_fn_label}: nested ({', '.join(_nested_parts)}){_always_note}")
+            else:
+                _subfolder_lines.append(f"  F{_fn_label}: {_file_count} file(s){_always_note}")
 
         # Manifest header
         manifest_lines = [
@@ -3235,7 +3255,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.70"
+VERSION = "v3.18.73"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -6704,9 +6724,29 @@ def main():
             _fn_label = str(int(_fn) if _fn == int(_fn) else _fn)
             _file_count = len(_fd.get('files', []))
             _always_note = ""
-            if _fd.get('always_first'): _always_note += " + always_first"
-            if _fd.get('always_last'):  _always_note += " + always_last"
-            _subfolder_lines.append(f"  F{_fn_label}: {_file_count} file(s){_always_note}")
+            # always_first/last are now pools (lists) — show count if > 1
+            _af_pool = _fd.get('always_first', [])
+            _al_pool = _fd.get('always_last',  [])
+            if _af_pool:
+                _af_count = len(_af_pool) if isinstance(_af_pool, list) else 1
+                _always_note += f" + always_first({_af_count})" if _af_count > 1 else " + always_first"
+            if _al_pool:
+                _al_count = len(_al_pool) if isinstance(_al_pool, list) else 1
+                _always_note += f" + always_last({_al_count})" if _al_count > 1 else " + always_last"
+            # Nested subfolder: show sub-folder count instead of 0 files
+            _nsf = _fd.get('nested_subfolder_files')
+            if _nsf:
+                _nested_count = len(_nsf)
+                # Show per-sub-subfolder file counts
+                _nested_parts = []
+                for _nfn in sorted(_nsf.keys()):
+                    _nfd = _nsf[_nfn]
+                    _nfn_label = str(int(_nfn) if _nfn == int(_nfn) else _nfn)
+                    _nfile_count = len(_nfd.get('files', []))
+                    _nested_parts.append(f"F{_nfn_label}:{_nfile_count}")
+                _subfolder_lines.append(f"  F{_fn_label}: nested ({', '.join(_nested_parts)}){_always_note}")
+            else:
+                _subfolder_lines.append(f"  F{_fn_label}: {_file_count} file(s){_always_note}")
 
         # Manifest header
         manifest_lines = [
