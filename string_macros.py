@@ -329,7 +329,7 @@ CHANGELOG (recent):
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.67"
+VERSION = "v3.18.68"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -3235,7 +3235,7 @@ This ensures the documentation stays accurate and users know what features exist
 import argparse, json, random, re, sys, os, math, shutil, itertools
 from pathlib import Path
 
-VERSION = "v3.18.67"
+VERSION = "v3.18.68"
 
 # ============================================================================
 # FEATURE DOCUMENTATION - ORGANIZED BY PURPOSE
@@ -6842,10 +6842,10 @@ def main():
             # The loop uses (target_ms - massive_pause_budget) as its effective ceiling.
             if is_inef:
                 _expected_massive_ms = int(rng.uniform(240000.0, 420000.0))  # no mult
-                _effective_target = max(version_target_ms - _expected_massive_ms, version_target_ms // 4)
+                _effective_target = max(target_ms - _expected_massive_ms, target_ms // 4)
             else:
                 _expected_massive_ms = 0
-                _effective_target = version_target_ms
+                _effective_target = target_ms
 
             # ROOT-LEVEL always_first: play ONCE before all cycles (not per cycle)
             _picked_raf = _pick_af_al(root_always_first, rng)
